@@ -1,0 +1,15 @@
+# Lens output — reports and raw ranked data are about *your* codebase.
+# They are working artifacts, not source, and they routinely name internal
+# services, routes and file paths. Keep them out of version control by default;
+# a security lens report in particular is a map of your own soft spots.
+REPORT-*.md
+TARGETS*.md
+TRIAGE-*.md
+data-*.json
+candidates.json
+
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+.DS_Store
