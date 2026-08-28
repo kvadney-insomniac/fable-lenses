@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Architecture/coupling lens — where is an abstraction missing or violated?
+"""Architecture/coupling lens, where is an abstraction missing or violated?
 
 The drift lens finds copy-paste; this lens finds *coupling*: the import graph
 among the repo's own Python modules, read from a committed git ref rather than
@@ -48,7 +48,7 @@ SRC_CANDIDATES = ("src", "app", "lib")
 # used in reports. A module may import its own rank or any rank to the right,
 # never one to the left.
 #
-# This default describes the layout most HTTP services converge on — request
+# This default describes the layout most HTTP services converge on, request
 # handlers on top, domain services beneath them, data/schema definitions and
 # shared helpers at the bottom. It is a widespread convention, not a law: a
 # repo that layers differently should pass --layers, and one with no layering
@@ -110,11 +110,11 @@ def path_to_module(path, strip=""):
 
 
 def layer_of(path, ranks, src_root=""):
-    """(label, rank) for a file — first path segment below src_root that names a layer.
+    """(label, rank) for a file, first path segment below src_root that names a layer.
 
     The file stem counts too, so a one-file layer (`models.py`) lands the same
     way a directory (`models/`) does. First match wins; anything unmatched is
-    `core` with rank None — unranked code is never flagged in either direction,
+    `core` with rank None, unranked code is never flagged in either direction,
     because we have no evidence about where it is supposed to sit.
     """
     rel = path[len(src_root) + 1:] if src_root and path.startswith(src_root + "/") else path
@@ -139,7 +139,7 @@ def imports_of(repo, ref, path, known, tops, strip=""):
     """In-repo modules imported by `path` (absolute + relative), filtered to `known`.
 
     `tops` is the set of top-level package names this repo actually owns, which
-    is how an in-repo import is told apart from a third-party one — no
+    is how an in-repo import is told apart from a third-party one, no
     hardcoded namespace required.
     """
     try:
@@ -308,7 +308,7 @@ def main():
         Path(args.json).write_text(json.dumps(
             {"rows": rows, "cycles": sccs, "ref": args.ref,
              "src_root": src_root or ".", "layers": args.layers}, indent=1))
-    lines = [f"# arch lens — `{Path(args.repo).name}` @ {args.ref}",
+    lines = [f"# arch lens, `{Path(args.repo).name}` @ {args.ref}",
              "",
              f"Source root `{src_root or '.'}` · layers `{args.layers}`.",
              "",
@@ -321,7 +321,7 @@ def main():
     for r in rows[: args.top]:
         v = "; ".join(r["violations"][:3]) + (" …" if len(r["violations"]) > 3 else "")
         lines.append(f"| {r['score']} | {r['impact']}×{r['opportunity']} | `{r['module']}` "
-                     f"| {r['layer']} | {r['fan_in']} | {r['fan_out']} | {v or '—'} "
+                     f"| {r['layer']} | {r['fan_in']} | {r['fan_out']} | {v or '-'} "
                      f"| {'⭕' if r['in_cycle'] else ''} |")
     if sccs:
         lines += ["", "## Import cycles (SCCs)", ""]

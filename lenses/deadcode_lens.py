@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lens 4: dead-code = unused-confidence x size.
 
-Find code that is *defined but apparently never referenced elsewhere* — the
+Find code that is *defined but apparently never referenced elsewhere*, the
 files and symbols where a premium model could delete or consolidate with high
 leverage. Same machine shape: rank cheaply so the expensive model only reads
 the plausible candidates.
@@ -10,25 +10,25 @@ the plausible candidates.
 
 Two granularities, in order of trust:
 
-  1. WHOLE-FILE — a module imported by no other file. Far more reliable than
+  1. WHOLE-FILE, a module imported by no other file. Far more reliable than
      per-symbol; lead with it.
-  2. PER-SYMBOL — a top-level def/class whose name appears nowhere else in the
+  2. PER-SYMBOL, a top-level def/class whose name appears nowhere else in the
      repo (grep across all source). Recall filter only.
 
   *** THIS IS A CANDIDATE LIST, NOT A DELETE LIST. ***
 
-False POSITIVES (look dead, are not) — dynamic dispatch hides the reference:
+False POSITIVES (look dead, are not), dynamic dispatch hides the reference:
   - FastAPI/Flask route handlers (referenced only by their `@router.get`
     decorator, never by name)
-  - Functions wired into a registry rather than called — an LLM tool decorated
+  - Functions wired into a registry rather than called, an LLM tool decorated
     with `@tool` and listed in a tools array, a plugin registered by entry point
   - Pydantic / SQLAlchemy models (instantiated reflectively / by name)
-  - Next.js file-routing entrypoints — `page.tsx` / `layout.tsx` / `route.ts`
+  - Next.js file-routing entrypoints, `page.tsx` / `layout.tsx` / `route.ts`
     are referenced by *nothing* in code; the framework mounts them by path.
   - Scheduler jobs, CLI entrypoints, `__all__` exports.
 These classes are auto-tagged in the report so they can be discounted.
 
-False NEGATIVES (are dead, look alive) — per-symbol grep skews toward UNIQUE
+False NEGATIVES (are dead, look alive), per-symbol grep skews toward UNIQUE
 names. Common names (`get`, `run`, `process`, `handler`) match somewhere by
 coincidence and get filtered out, so the symbol list UNDER-reports. Safer
 direction, but state it.
@@ -38,7 +38,7 @@ WHICH DIRECTORIES GET SCANNED
     hold the code being *judged*, relative to the repo root. When omitted the
     lens auto-detects the common layouts (``src/``, ``app/``, ``lib/``) and
     falls back to the whole repo if it finds none. Note that this only narrows
-    the CANDIDATE set — the reference corpus that decides whether something is
+    the CANDIDATE set, the reference corpus that decides whether something is
     referenced is always every tracked source file in the repo (see below).
 
 Usage:
@@ -66,7 +66,7 @@ TS_EXT = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 # cheaper than the coupling.
 SRC_ROOT_CANDIDATES = ("src", "app", "lib")
 
-# Files the framework mounts by path / name, not by import — never "dead".
+# Files the framework mounts by path / name, not by import, never "dead".
 ENTRYPOINT_BASENAMES = {
     "main.py", "__init__.py", "conftest.py", "scheduler.py", "config.py",
     "page.tsx", "layout.tsx", "route.ts", "loading.tsx", "error.tsx",
@@ -78,7 +78,7 @@ ENTRYPOINT_BASENAMES = {
 def resolve_src_roots(repo_path: Path, requested: list[str] | None) -> tuple[str, ...]:
     """Return the path prefixes to scan, e.g. ``("src/",)`` or ``("",)`` for all.
 
-    An empty string means "the repo root" — it works because every prefix test
+    An empty string means "the repo root", it works because every prefix test
     is ``path.startswith(root)`` and every path starts with "". Falling back to
     the whole repo rather than guessing a layout matters here: a wrong guess
     produces an empty candidate list, which reads as "no dead code" instead of
@@ -129,7 +129,7 @@ def fp_class(rel: str, src: str) -> list[str]:
         tags.append("scheduler-job")
     if "__all__" in src:
         tags.append("explicit-export")
-    # Code an SDK or framework looks up by name at run time — evaluators, plugin
+    # Code an SDK or framework looks up by name at run time, evaluators, plugin
     # entry points and the like. Nothing calls them in-tree, so a reference grep
     # reports them dead every time.
     if (
@@ -204,7 +204,7 @@ def main() -> None:
         and not denied(f)
         and any(f.startswith(r) for r in src_roots)
     ]
-    # REFERENCE corpus = EVERY tracked source file repo-wide — tooling scripts,
+    # REFERENCE corpus = EVERY tracked source file repo-wide, tooling scripts,
     # migrations, e2e suites, benchmarks, AND tests. A product module that is
     # only imported from a script outside the source roots is NOT dead; scoping
     # the corpus to product code + tests was a real false-positive class, so the
@@ -238,7 +238,7 @@ def main() -> None:
     _IDENT = re.compile(r"[A-Za-z_]\w*")
     ident_freq: Counter[str] = Counter(_IDENT.findall(all_src))
     # 2. Import-specifier stems. TS module paths are often hyphenated (e.g.
-    #    `date-picker`) so they never appear as a single ident token — collect
+    #    `date-picker`) so they never appear as a single ident token, collect
     #    their stems from import/from/require specifiers, parsed PER FILE so
     #    quote pairing stays sane (a global quote-regex drifts on apostrophes
     #    once the corpus is a few megabytes).
@@ -305,7 +305,7 @@ def main() -> None:
     if not contents:
         shown = ", ".join(r or "<repo root>" for r in src_roots)
         print(
-            f"no source files matched under: {shown} — pass --src-root to point "
+            f"no source files matched under: {shown}, pass --src-root to point "
             "the lens at your source directories",
             file=sys.stderr,
         )
@@ -327,7 +327,7 @@ def main() -> None:
 
 
 def _scan_description(scanned: list[str], src_roots: tuple[str, ...]) -> str:
-    """Describe what was actually scanned — languages and roots, not repo names.
+    """Describe what was actually scanned, languages and roots, not repo names.
 
     Derived from the files we *looked at*, not from the candidate rows: a clean
     repo produces no candidates, and inferring the language from an empty
@@ -354,7 +354,7 @@ def render_md(
 ) -> str:
     high = [r for r in file_rows if r["confidence"] == "high"]
     out = [
-        f"# Fable-target — DEAD-CODE lens — `{repo}`",
+        f"# Fable-target, DEAD-CODE lens, `{repo}`",
         "",
         f"_{len(scanned)} files scanned ({_scan_description(scanned, src_roots)}) · "
         f"{len(file_rows)} candidate files · {len(symbol_rows)} candidate symbols · "
@@ -373,12 +373,12 @@ def render_md(
         "`fastapi-route` (mounted by decorator, never called by name), "
         "`llm-tool` (registered in a tool list rather than invoked), "
         "`orm/pydantic-model` (reflective), `scheduler-job`, "
-        "`dynamic-registry` (looked up by name at run time — evaluators, plugin "
+        "`dynamic-registry` (looked up by name at run time, evaluators, plugin "
         "entry points), `explicit-export` (`__all__`). A row WITH tags is almost "
         "certainly alive.",
         ">",
         "> **False negatives**: per-symbol grep skews toward *uniquely-named* "
-        "symbols — common names (`get`, `run`, `process`) match by coincidence and "
+        "symbols, common names (`get`, `run`, `process`) match by coincidence and "
         "get filtered, so the symbol list UNDER-reports (safe direction). Symbols "
         "shorter than 4 chars are skipped for the same reason.",
         ">",
@@ -386,7 +386,7 @@ def render_md(
         "reference, including tests, tooling and scripts outside the scanned "
         "roots. A module used only by a build script is not dead.",
         "",
-        "## 🎯 Whole-file candidates — imported by nothing (highest trust)",
+        "## 🎯 Whole-file candidates, imported by nothing (highest trust)",
         "",
         "Files with **no** framework tag are the real candidates; tagged rows are "
         "shown for completeness but are very likely alive.",
@@ -395,20 +395,20 @@ def render_md(
         "|--:|----:|:----------:|------|-------------------|",
     ]
     for i, r in enumerate(file_rows[:top], 1):
-        tags = ", ".join(f"`{t}`" for t in r["fp_tags"]) or "**— none (candidate)**"
+        tags = ", ".join(f"`{t}`" for t in r["fp_tags"]) or "**- none (candidate)**"
         out.append(f"| {i} | {r['loc']} | {r['confidence']} | `{r['file']}` | {tags} |")
     out.append("")
-    out.append("## Per-symbol candidates — top-level name grep-absent elsewhere (low trust)")
+    out.append("## Per-symbol candidates, top-level name grep-absent elsewhere (low trust)")
     out.append("")
     out.append(
-        "_Recall filter only — a symbol here may be referenced dynamically, via "
+        "_Recall filter only, a symbol here may be referenced dynamically, via "
         "`getattr`, a registry, or a string. Verify before touching._"
     )
     out.append("")
     out.append("| # | LOC(file) | symbol | file | likely-alive tags |")
     out.append("|--:|----------:|--------|------|-------------------|")
     for i, r in enumerate(symbol_rows[:top], 1):
-        tags = ", ".join(f"`{t}`" for t in r["fp_tags"]) or "—"
+        tags = ", ".join(f"`{t}`" for t in r["fp_tags"]) or "-"
         out.append(
             f"| {i} | {r['loc']} | `{r['symbol']}` | `{r['file']}` | {tags} |"
         )

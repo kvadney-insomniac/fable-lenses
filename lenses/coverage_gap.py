@@ -15,7 +15,7 @@ Usage:
       [--include /services/ --include /routes/] [--top 18]
 
 <scores.json> is the `--json` output of score_targets.py, run against the same
-repo — the churn and complexity numbers are read straight out of it.
+repo, the churn and complexity numbers are read straight out of it.
 """
 import argparse
 import json

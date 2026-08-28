@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""Drift lens — find copy-pasted code that has DIVERGED.
+"""Drift lens, find copy-pasted code that has DIVERGED.
 
 This exists because a whole class of latent bugs turned out to share one shape:
 a block duplicated across N sites where the copies silently drifted apart. A
 guard added to two of four call sites. A parser taught about new cases in one
 copy and not its siblings. A default corrected in one place.
 
-Nothing fails when this happens — the copies simply disagree, and only under the
+Nothing fails when this happens, the copies simply disagree, and only under the
 inputs the fix was about, which is exactly why it survives review and testing.
 Churn x complexity surfaces these occasionally, by accident, because a
 much-edited file tends to be a much-copied one. This lens looks for them on
 purpose.
 
-Method (code-grounded, no issue tracker — cannot go stale):
+Method (code-grounded, no issue tracker, cannot go stale):
   1. Extract every function via stdlib `ast` (Python only; TS has no stdlib parser).
   2. NORMALIZE tokens: identifiers -> ID, literals -> LIT, keywords/operators kept.
      So two clones that differ only in variable/column names become IDENTICAL,
      and a real logic difference (a missing guard, +/- flip, an extra branch)
      is what shows up as the diff.
   3. Near-duplicate detection with a shingle prefilter (avoids O(n^2)).
-  4. Flag pairs whose normalized similarity is HIGH but < 1.0 — that band is
+  4. Flag pairs whose normalized similarity is HIGH but < 1.0, that band is
      drift: same logic, one copy changed. (== 1.0 = exact clone modulo names:
      dedup debt, reported separately.)
 
@@ -116,7 +116,7 @@ def candidate_pairs(funcs: list[dict]) -> set[tuple[int, int]]:
     shared: dict[tuple[int, int], int] = defaultdict(int)
     for s, members in index.items():
         if len(members) < 2 or len(members) > MAX_SHINGLE_FANOUT:
-            continue  # unique or boilerplate — no signal
+            continue  # unique or boilerplate, no signal
         for a in range(len(members)):
             for b in range(a + 1, len(members)):
                 shared[(members[a], members[b])] += 1
@@ -170,7 +170,7 @@ def main() -> None:
         reverse=True,
     )
 
-    out = [f"# Drift lens — `{args.repo}`", "",
+    out = [f"# Drift lens, `{args.repo}`", "",
            f"_{len(funcs)} functions scanned · **{len(ranked)} drifted groups** "
            f"(similar but not identical) · {len(exact)} exact clones (dedup debt)._",
            "",
@@ -184,13 +184,13 @@ def main() -> None:
                    f"{best_ratio[root]:.0%} · ~{max(funcs[i]['loc'] for i in g)} LOC")
         for i in members:
             out.append(f"- `{funcs[i]['file']}:{funcs[i]['line']}` "
-                       f"**{funcs[i]['name']}**() — {funcs[i]['loc']} LOC")
+                       f"**{funcs[i]['name']}**(), {funcs[i]['loc']} LOC")
         out.append("")
     md = "\n".join(out)
 
     if args.md:
         Path(args.md).write_text(md, encoding="utf-8")
-        print(f"wrote {args.md} — {len(ranked)} drifted groups, {len(exact)} exact clones")
+        print(f"wrote {args.md}, {len(ranked)} drifted groups, {len(exact)} exact clones")
     else:
         print(md)
     if args.json:

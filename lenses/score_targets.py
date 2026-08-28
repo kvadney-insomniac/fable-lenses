@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fable-target — the "targeting machine".
+"""Fable-target, the "targeting machine".
 
 Sweep a repo with a cheap, deterministic pass and score every code file on
 ``impact x opportunity`` so a premium model (Fable 5) can be aimed at the
@@ -277,11 +277,11 @@ def score_repo(repo: str, since: str) -> list[dict]:
 
 def render_md(repo: str, since: str, rows: list[dict], top: int) -> str:
     # Strict top-right corner: both axes in the top 40% of the repo. (A looser
-    # "both >= 3" keeps ~46% of files because churn and complexity correlate —
+    # "both >= 3" keeps ~46% of files because churn and complexity correlate -
     # too wide to call a target list.)
     target = [r for r in rows if r["impact"] >= 4 and r["opportunity"] >= 4]
     out = []
-    out.append(f"# Fable-target ranking — `{repo}`")
+    out.append(f"# Fable-target ranking, `{repo}`")
     out.append("")
     out.append(
         f"_Window: commits since **{since}** · {len(rows)} code files scored · "
@@ -290,7 +290,7 @@ def render_md(repo: str, since: str, rows: list[dict], top: int) -> str:
     out.append("")
     out.append(
         "`score = impact(git churn 1-5) x opportunity(complexity 1-5)`. "
-        "Buckets are quintiles **within this repo** — don't compare scores across repos."
+        "Buckets are quintiles **within this repo**, don't compare scores across repos."
     )
     out.append("")
 
@@ -308,7 +308,7 @@ def render_md(repo: str, since: str, rows: list[dict], top: int) -> str:
             )
         return lines
 
-    out.append("## 🎯 Target list — high impact × high opportunity (both ≥ 4)")
+    out.append("## 🎯 Target list, high impact × high opportunity (both ≥ 4)")
     out.append("")
     out.append("These are where to point Fable 5 first. Ordered by score.")
     out.append("")
@@ -322,7 +322,7 @@ def render_md(repo: str, since: str, rows: list[dict], top: int) -> str:
     out.append("---")
     out.append(
         "**How to use:** point the premium model at the top of the target list, "
-        "and ask for the *root-cause / meta-level* fix, not a point fix — "
+        "and ask for the *root-cause / meta-level* fix, not a point fix, "
         "models default to patching the symptom unless told to go architectural."
     )
     out.append("")

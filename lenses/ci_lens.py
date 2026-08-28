@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""CI/CD health lens — which workflows burn the most trust and wall-clock?
+"""CI/CD health lens, which workflows burn the most trust and wall-clock?
 
 impact × opportunity, same shape as the other lenses:
   impact      = run frequency (how often the workflow gates someone)
   opportunity = failure rate (completed runs only; conclusion == failure)
 
 Cancelled runs are counted separately, NOT as failures. A cancelled deploy is
-usually supersession — a newer push landed while this run was still queued —
+usually supersession, a newer push landed while this run was still queued -
 which is healthy churn, and folding it into the failure rate makes the busiest
 workflows look the most broken precisely because they are the busiest.
 
@@ -116,7 +116,7 @@ def main():
             {"repo": repo, "sampled_runs": len(runs), "workflows": stats}, indent=1))
 
     window = f"last {len(runs)} runs"
-    L = [f"# CI lens — `{repo}` ({window})", "",
+    L = [f"# CI lens, `{repo}` ({window})", "",
          "Failure rate excludes cancelled runs (a cancelled run is usually "
          "supersession by a newer push, not a defect). p50 includes queue time.", "",
          "| score | I×O | workflow | runs | fail rate | fail | cancel | p50 min |",
@@ -124,7 +124,7 @@ def main():
     for s in stats:
         L.append(f"| {s['score']} | {s['impact']}×{s['opportunity']} | {s['workflow']} "
                  f"| {s['runs']} | {s['failure_rate']:.0%} | {s['failure']} "
-                 f"| {s['cancelled']} | {s['p50_min'] if s['p50_min'] is not None else '—'} |")
+                 f"| {s['cancelled']} | {s['p50_min'] if s['p50_min'] is not None else '-'} |")
     report = "\n".join(L) + "\n"
     if args.md:
         Path(args.md).write_text(report)

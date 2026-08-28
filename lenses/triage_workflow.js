@@ -1,4 +1,4 @@
-// Tier-1 triage — a cheap-model verification pass over the lenses' candidates.
+// Tier-1 triage, a cheap-model verification pass over the lenses' candidates.
 //
 // Invoke from a Claude Code session:
 //   Workflow({ scriptPath: 'lenses/triage_workflow.js',
@@ -10,28 +10,28 @@
 //
 // `root` is required; everything else has a default:
 //   ref             git ref to verify against          (default 'HEAD')
-//   targets         { <target name>: <path> } — path is absolute, or relative
+//   targets         { <target name>: <path> }, path is absolute, or relative
 //                   to root. Defaults to `${root}/${name}` for every target
 //                   name appearing in the candidates, so a single-repo sweep
 //                   named after its own directory needs no config at all, and
 //                   a target named '.' means root itself.
-//   ghRepos         { <target name>: 'OWNER/NAME' } (or one string for all) —
+//   ghRepos         { <target name>: 'OWNER/NAME' } (or one string for all) -
 //                   only used to let the v2-riser check look at open issues.
 //                   Omitted: that step is skipped, git history alone decides.
 //   candidates      the parsed/serialized candidates.json; if absent it is
 //                   loaded from candidatesPath.
 //   candidatesPath  default `${root}/candidates.json`
-//   model, effort   default 'haiku' / 'low' — this tier is meant to be cheap.
+//   model, effort   default 'haiku' / 'low', this tier is meant to be cheap.
 //
-// Every agent is READ-ONLY against the ref (git show / git grep / git log —
+// Every agent is READ-ONLY against the ref (git show / git grep / git log -
 // never checkout), so the pass is safe to run while other agents have the
 // working tree on their own branches.
 //
-// POLICY — a cheap model may not bury a security finding. Security-lens rows
+// POLICY, a cheap model may not bury a security finding. Security-lens rows
 // are ANNOTATE-ONLY: the verdict adds context, but the row always appears in
 // the triage report and the synthesis step must keep it regardless of status.
 // The asymmetry is the whole argument: a false discard on an auth/tenancy issue
-// is invisible — nobody ever learns the finding was dropped — while a false
+// is invisible, nobody ever learns the finding was dropped, while a false
 // pass costs exactly one premium-model look. The same asymmetry applies to
 // `delete-candidate` verdicts: a deletion that looked safe to a cheap model has
 // been wrong before, because the only references were dynamic, so those still
@@ -44,11 +44,11 @@ export const meta = {
   phases: [{ title: 'Triage', detail: 'one cheap verifier agent per candidate', model: 'haiku' }],
 }
 
-// args may arrive as an object, a JSON string, or missing pieces — normalize.
+// args may arrive as an object, a JSON string, or missing pieces, normalize.
 const A = typeof args === 'string' ? JSON.parse(args) : (args || {})
 const root = A.root
 if (!root) {
-  throw new Error('triage_workflow: args.root is required — pass the absolute path of the checkout the candidates were scored from')
+  throw new Error('triage_workflow: args.root is required, pass the absolute path of the checkout the candidates were scored from')
 }
 const ref = A.ref || 'HEAD'
 const MODEL = A.model || 'haiku'
@@ -72,7 +72,7 @@ const ghRepoFor = (target) =>
 if (!Array.isArray(candidates)) {
   // Fallback: load candidates.json from disk via a loader agent (workflow
   // scripts have no filesystem access; agents do).
-  log(`args.candidates missing — loading ${candidatesPath} via loader agent`)
+  log(`args.candidates missing, loading ${candidatesPath} via loader agent`)
   const loaded = await agent(
     `Run exactly: cat ${candidatesPath}\n` +
     `Return the file's JSON content via structured output as {"json": "<the raw file content as a string>"}. Do not modify it.`,
@@ -117,7 +117,7 @@ File: ${c.file}
 Lens: ${c.lens}
 Lens detail: ${c.detail}
 
-HARD RULES — the working tree may be on another agent's branch:
+HARD RULES, the working tree may be on another agent's branch:
 - Read file content ONLY via:  git -C ${dir} show ${ref}:${c.file}
 - Search ONLY via:            git -C ${dir} grep -n <pattern> ${ref} -- '<glob>'
 - History via:                git -C ${dir} log ${ref} --oneline -8 -- ${c.file}
@@ -129,14 +129,14 @@ HARD RULES — the working tree may be on another agent's branch:
 const LENS_TASK = {
   techdebt: () => `The lens flagged high churn × high complexity. Decide whether this is debt worth
 premium-model attention: skim the file's structure, check recent history for a refactor that
-already landed, and classify — point-fix (e.g. one god-function to split), architectural
+already landed, and classify, point-fix (e.g. one god-function to split), architectural
 (layering/ownership problem), or false-positive (complexity is inherent/generated/test-fixture).`,
 
   security: () => `The lens flagged attack-surface reach × vuln-likelihood patterns. Verify each flagged
 pattern still exists on ${ref} (e.g. grep for raw SQL execution, string-interpolated SQL, missing auth
 dependencies), and note mitigations you can SEE (parameterization, an auth dependency on the route,
 tenancy/row-level-security context). This is a security row: your verdict annotates, it will never
-discard the row — so be precise about what is and isn't there.`,
+discard the row, so be precise about what is and isn't there.`,
 
   deadcode: () => `The lens claims this file or symbol is unreferenced. Verify with git grep against
 ${ref}: direct imports, string-based/dynamic references (getattr, registry dicts, framework
@@ -146,7 +146,7 @@ false-positive or unclear.`,
 
   drift: () => `The lens flagged a copy-paste clone group that has diverged. Read every member function
 listed in the lens detail (git show the files, find the named functions). Judge: are they truly
-siblings? Did they diverge in behavior-relevant ways — especially a bugfix or guard applied to one
+siblings? Did they diverge in behavior-relevant ways, especially a bugfix or guard applied to one
 but not the other? klass: point-fix if one-side backport, architectural if they should be unified,
 false-positive if divergence is intentional/domain-driven.`,
 
@@ -157,7 +157,7 @@ false-positive if divergence is intentional/domain-driven.`,
       : `no issue tracker is configured for this target, so skip the issue lookup and`
     return `Open-issue/incident evidence promoted this file's rank. Check whether the concern is
 still live: ${issueStep} check recent commits to the file for a fix that already landed.
-Issues stay open after work ships — an open issue alone does not prove work is undone.`
+Issues stay open after work ships, an open issue alone does not prove work is undone.`
   },
 }
 
@@ -182,6 +182,6 @@ const results = await parallel(candidates.map((c) => () =>
 const done = results.filter(Boolean)
 const counts = {}
 for (const r of done) counts[r.verdict.status] = (counts[r.verdict.status] || 0) + 1
-log(`Done: ${done.length}/${candidates.length} verdicts — ${JSON.stringify(counts)}`)
+log(`Done: ${done.length}/${candidates.length} verdicts, ${JSON.stringify(counts)}`)
 
 return { verdicts: done, ref, failed: candidates.length - done.length }

@@ -3,13 +3,13 @@
 
 The Carlini use case: a cheap deterministic sweep ranks WHERE a premium model
 should look for vulnerabilities, so its expensive attention lands on the files
-that are both *reachable by an attacker* and *dense in risky patterns* — instead
+that are both *reachable by an attacker* and *dense in risky patterns*, instead
 of reading the whole tree.
 
     score = reach(imported-by + entrypoint role)  x  vuln(risk-pattern density)
 
 Both axes bucket 1-5 by quintile WITHIN a repo (same as score_targets.py), then
-multiply (1..25). Static grep/AST only — no execution, no model tokens.
+multiply (1..25). Static grep/AST only, no execution, no model tokens.
 
   * reach   = how many other files import this one + a role bonus for files that
               sit on the request edge (routes / auth / webhooks / input handlers).
@@ -20,14 +20,14 @@ multiply (1..25). Static grep/AST only — no execution, no model tokens.
               hand-rolled crypto, literal secrets).
 
 THIS IS A RECALL FILTER, NOT A VERDICT. Every "finding" is a candidate the
-premium model must confirm — the auth-missing check in particular over-reports,
+premium model must confirm, the auth-missing check in particular over-reports,
 because auth applied by middleware, by a router-level ``dependencies=[...]``, or
 through a helper dependency is invisible to a grep of the handler. See the
 caveats block in the generated report.
 
 WHICH DIRECTORIES GET SCANNED
     ``--src-root`` (repeatable, or comma-separated) names the directories to
-    walk, relative to the repo root — e.g. ``--src-root src --src-root lib``.
+    walk, relative to the repo root, e.g. ``--src-root src --src-root lib``.
     When omitted the lens auto-detects the common layouts (``src/``, ``app/``,
     ``lib/``) and falls back to scanning the whole repo if it finds none. The
     Python import graph derives its module prefix from whichever roots are in
@@ -39,7 +39,7 @@ PUBLIC / ALREADY-PROTECTED PATHS
     Some routes are *supposed* to be unauthenticated (health probes, webhooks
     that verify a signature rather than a user JWT), and in most codebases a
     further set is protected at the middleware layer rather than per handler.
-    Neither is a finding, and left unsuppressed they bury the rows that matter —
+    Neither is a finding, and left unsuppressed they bury the rows that matter -
     a noisy list is a list nobody reads. So those paths are suppressed:
 
       * built-in defaults cover only the universal cases (liveness/readiness/
@@ -49,7 +49,7 @@ PUBLIC / ALREADY-PROTECTED PATHS
       * or drop a ``.fable-public-paths`` file at the root of the scanned repo,
         one token per line, ``#`` starts a comment.
 
-    The three sources are UNIONED — the file and the flag extend the defaults,
+    The three sources are UNIONED, the file and the flag extend the defaults,
     they do not replace them. Tokens are matched case-insensitively as a
     *substring* of the handler's decorated path.
 
@@ -80,11 +80,11 @@ TS_EXT = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 # Directory names tried, in order, when --src-root is not given. These are the
 # layouts that show up across ecosystems (Python src-layout and app-layout, JS
 # src/ and lib/). If none of them exist we scan the whole repo rather than
-# guessing — a wrong guess silently scores zero files, which looks like a clean
+# guessing, a wrong guess silently scores zero files, which looks like a clean
 # repo instead of a misconfiguration.
 SRC_ROOT_CANDIDATES = ("src", "app", "lib")
 
-# Universal public paths — the ones that are unauthenticated in essentially any
+# Universal public paths, the ones that are unauthenticated in essentially any
 # service, so they are safe to suppress without knowing anything about the repo.
 # Health/liveness/readiness probes are hit by the orchestrator, metrics by the
 # scrape job, and webhook receivers authenticate the *sender's signature* rather
@@ -110,7 +110,7 @@ def _normalise_tokens(raw) -> list[str]:
     """Split on commas, strip `#` comments and whitespace, lowercase, drop empties.
 
     Matching is done against a lowercased path, so a token that arrives with any
-    uppercase in it would silently never match — normalise on the way in rather
+    uppercase in it would silently never match, normalise on the way in rather
     than trusting the caller.
     """
     out: list[str] = []
@@ -148,7 +148,7 @@ def load_public_paths(repo_path: Path, cli_values: list[str] | None) -> tuple[st
 def resolve_src_roots(repo_path: Path, requested: list[str] | None) -> tuple[str, ...]:
     """Return the path prefixes to scan, e.g. ``("src/",)`` or ``("",)`` for all.
 
-    An empty string means "the repo root" — it works because every prefix test
+    An empty string means "the repo root", it works because every prefix test
     is ``path.startswith(root)`` and every path starts with "".
     """
     roots: list[str] = []
@@ -223,7 +223,7 @@ def _strip_comments(src: str, is_py: bool) -> str:
     return "\n".join(lines)
 
 
-# Patterns that only make sense in Python — skipped on TS/JS to cut noise
+# Patterns that only make sense in Python, skipped on TS/JS to cut noise
 # (e.g. `.text()` response parsing, `pickle`, `yaml.load` don't exist client-side).
 _PY_ONLY_PATTERNS = {
     "raw_sql_exec", "fstring_sql", "percent_sql", "str_concat_sql",
@@ -255,8 +255,8 @@ def vuln_signals(
     # every project lays its handlers out differently (routes/, routers/, api/,
     # or beside the models), and a directory allowlist is exactly the kind of
     # layout assumption that makes a lens useless on the next repo. The cost is
-    # that a non-route file which happens to use the `@x.get("...")` shape — a
-    # cache wrapper, a test client helper — will be inspected too. That is rare,
+    # that a non-route file which happens to use the `@x.get("...")` shape, a
+    # cache wrapper, a test client helper, will be inspected too. That is rare,
     # and it fails toward over-reporting rather than silence.
     auth_gaps: list[str] = []
     if is_py:
@@ -278,12 +278,12 @@ def vuln_signals(
 
 
 def decorated_route_path(file_rel: str, decorated: str) -> str:
-    """Best-effort full path for a route — only used for the public-path filter.
+    """Best-effort full path for a route, only used for the public-path filter.
 
     The router's mount prefix is assembled at app-wiring time (``include_router``
     / ``register_blueprint``), which a per-file grep never sees, so the decorated
     string is all we have. We fold the filename stem in as a weak hint, on the
-    common convention that a handler module is mounted under its own name — e.g.
+    common convention that a handler module is mounted under its own name, e.g.
     ``routes/billing.py`` declaring ``/{id}`` becomes ``/billing/{id}``.
 
     Consequence worth knowing: a public path is only suppressible if its token
@@ -304,13 +304,13 @@ def build_import_graph(
 ) -> dict[str, int]:
     """Return {file_rel: imported-by count}. Cheap: match module stems in imports.
 
-    Python: ``from pkg.services.foo import`` / ``import pkg.services.foo`` — we
+    Python: ``from pkg.services.foo import`` / ``import pkg.services.foo``, we
     index every file by its dotted path derived from its location, AND by that
     path with the source root stripped, because a root that is a packaging
     directory rather than a package (the ``src/`` of a src-layout project) does
     not appear in the import statement. The prefixes come from the source roots
     in play, so nothing here is tied to one project's package name.
-    JS/TS: ``@/lib/foo`` (alias to the source root) or relative ``./foo`` — by
+    JS/TS: ``@/lib/foo`` (alias to the source root) or relative ``./foo``, by
     stem. Heuristic, like the TS complexity axis: lower confidence than Python,
     because a stem that occurs in two directories can't be disambiguated.
     """
@@ -366,7 +366,7 @@ def build_import_graph(
 
 
 def role_bonus(file_rel: str, src: str) -> tuple[int, list[str]]:
-    """Entrypoint role bonus — files on the request edge have higher reach."""
+    """Entrypoint role bonus, files on the request edge have higher reach."""
     roles: list[str] = []
     low = file_rel.lower()
     if "/routes/" in low or "/api/" in low or "route.ts" in low:
@@ -432,7 +432,7 @@ def score_repo(
 
 
 def _scan_description(rows: list[dict], src_roots: tuple[str, ...]) -> str:
-    """Describe what was actually scanned — languages and roots, not repo names."""
+    """Describe what was actually scanned, languages and roots, not repo names."""
     langs = []
     if any(r["file"].endswith(".py") for r in rows):
         langs.append("Python")
@@ -455,31 +455,31 @@ def render_md(
     # root instead would be wrong the moment someone keeps Python under `src/`.
     has_ts = any(Path(r["file"]).suffix in TS_EXT for r in rows)
     out = [
-        f"# Fable-target — SECURITY lens — `{repo}`",
+        f"# Fable-target, SECURITY lens, `{repo}`",
         "",
         f"_{len(rows)} source files scored ({_scan_description(rows, src_roots)}) · "
         f"**{len(target)}** in the high-reach × high-vuln-likelihood quadrant._",
         "",
         "`score = reach(imported-by + edge role, 1-5) × vuln(risk-pattern density, 1-5)`. "
-        "Quintiles **within this repo** — don't compare across repos.",
+        "Quintiles **within this repo**, don't compare across repos.",
         "",
         "> **This is a recall filter, not a verdict.** Every row is a *candidate* "
-        "for a premium model (the Carlini use case) to confirm — high density of "
+        "for a premium model (the Carlini use case) to confirm, high density of "
         "risky patterns ≠ a vulnerability. Known over-reporting:",
         ">",
-        "> - **`route_no_auth_dep`** — this reads only the handler's decorator and "
+        "> - **`route_no_auth_dep`**, this reads only the handler's decorator and "
         "signature. Auth applied at the middleware layer, at the router level "
         "(`dependencies=[...]`), or through a helper dependency is invisible to "
         "the grep, so a flagged handler may be perfectly well protected. Confirm "
         "each row against your own auth wiring before acting on it.",
-        "> - **`raw_sql_exec`** counts every `.execute(`/`text(` — most are "
+        "> - **`raw_sql_exec`** counts every `.execute(`/`text(`, most are "
         "parameterized and safe. The dangerous siblings are `fstring_sql` / "
         "`percent_sql` / `str_concat_sql`.",
-        "> - **`ssrf_request`** flags any non-literal URL arg — many are config "
+        "> - **`ssrf_request`** flags any non-literal URL arg, many are config "
         "constants, not user input.",
         "> - The import graph is grep-resolved; **reach on TS/JS is "
         "lower-confidence** than on Python (`@/` alias + relative resolution "
-        "can't disambiguate a stem that occurs twice — same caveat as the TS "
+        "can't disambiguate a stem that occurs twice, same caveat as the TS "
         "complexity axis).",
         "",
     ]
@@ -491,7 +491,7 @@ def render_md(
             "signals on a TS/JS file are `fetch_var` (a templated-URL fetch, "
             "weight 1), an `.exec()` regex false positive, and "
             "`dangerouslySetInnerHTML` / literal secrets. So a top-quadrant TS/JS "
-            "file is usually **reach-driven** — a widely-imported API client with "
+            "file is usually **reach-driven**, a widely-imported API client with "
             "one templated fetch, NOT a hot finding. Real client-side risk (XSS "
             "sinks, token handling, auth-redirect flows) needs human/LLM review, "
             "not this grep.",
@@ -505,15 +505,15 @@ def render_md(
         ]
         for i, r in enumerate(items, 1):
             pats = sorted(r["patterns"].items(), key=lambda kv: -kv[1])
-            patstr = ", ".join(f"`{k}`×{v}" for k, v in pats[:4]) or "—"
-            roles = ",".join(r["roles"]) or "—"
+            patstr = ", ".join(f"`{k}`×{v}" for k, v in pats[:4]) or "-"
+            roles = ",".join(r["roles"]) or "-"
             lines.append(
                 f"| {i} | **{r['score']}** | {r['reach']}×{r['vuln']} | "
                 f"`{r['file']}` | {r['imported_by']} | {roles} | {patstr} |"
             )
         return lines
 
-    out.append("## 🎯 Security target list — high reach × high vuln-likelihood (both ≥ 4)")
+    out.append("## 🎯 Security target list, high reach × high vuln-likelihood (both ≥ 4)")
     out.append("")
     out.append("Point the premium model here first for a vulnerability pass.")
     out.append("")
@@ -528,12 +528,12 @@ def render_md(
         out.append("")
         out.append(
             "_Handlers whose decorated path matches a public token are suppressed. "
-            f"Active tokens: {suppressed} — the built-in probe/metrics/webhook "
+            f"Active tokens: {suppressed}, the built-in probe/metrics/webhook "
             "defaults, plus anything from `--public-paths` or `.fable-public-paths`. "
             "The suppression is deliberately **partial**: the router's mount prefix "
             "is assembled at app-wiring time and is not visible per file, so a route "
             "whose public-ness lives in that prefix still surfaces here. Note the "
-            "opposite hazard too — a token that is short or generic enough to match "
+            "opposite hazard too, a token that is short or generic enough to match "
             "unintended paths deletes real findings from this table without warning. "
             "Each remaining row still needs confirmation: auth may be applied at the "
             "router level (`dependencies=[...]`), by middleware, or via a helper "
@@ -571,7 +571,7 @@ def main() -> None:
         metavar="TOKEN",
         help="extra path tokens whose handlers are legitimately unauthenticated; "
         "repeatable or comma-separated. Unioned with the built-in defaults and "
-        f"with {PUBLIC_PATHS_FILENAME} at the repo root. Keep it tight — every "
+        f"with {PUBLIC_PATHS_FILENAME} at the repo root. Keep it tight, every "
         "token silently hides findings.",
     )
     ap.add_argument("--top", type=int, default=40)
@@ -587,7 +587,7 @@ def main() -> None:
     if not rows:
         shown = ", ".join(r or "<repo root>" for r in src_roots)
         print(
-            f"no source files matched under: {shown} — pass --src-root to point "
+            f"no source files matched under: {shown}, pass --src-root to point "
             "the lens at your source directories",
             file=sys.stderr,
         )

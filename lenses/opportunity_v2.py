@@ -5,9 +5,9 @@ The generic machine scores opportunity = code complexity. That's a proxy for
 "how much latent debt." But a repo usually has *direct* signals of where pain
 actually lives, which complexity can't see:
 
-  (a) OPEN GitHub issues that name the file   — users/devs are hitting it now
-  (b) code-review / audit findings on it      — a reviewer already flagged it
-  (c) incident notes that mention it          — it has burned you in production
+  (a) OPEN GitHub issues that name the file  , users/devs are hitting it now
+  (b) code-review / audit findings on it     , a reviewer already flagged it
+  (c) incident notes that mention it         , it has burned you in production
 
 v2 opportunity = complexity-bucket  (+)  evidence (a + 2b + 3c, capped & bucketed).
 The IMPACT axis (git churn) is unchanged. We re-bucket the new opportunity,

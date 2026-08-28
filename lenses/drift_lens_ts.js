@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-/* Drift lens (TypeScript) — find copy-pasted code that DIVERGED.
+/* Drift lens (TypeScript), find copy-pasted code that DIVERGED.
  *
  * The TypeScript sibling of drift_lens.py, which could only read .py. The bug
  * class both exist to catch: one copy of a hand-written mapper or buffer-parser
  * gets a fix and its siblings do not, so the same logic quietly disagrees with
- * itself across the codebase. Nothing fails — the copies just answer
+ * itself across the codebase. Nothing fails, the copies just answer
  * differently, and only under the inputs the fix was about.
  *
  * This scans .ts/.tsx with the real TypeScript compiler rather than a regex,
@@ -165,7 +165,7 @@ const ranked = [...groups.values()].sort((g1, g2) => {
 });
 
 const lines = [
-  `# Drift lens (TypeScript) — \`${REPO}\``,
+  `# Drift lens (TypeScript), \`${REPO}\``,
   "",
   `_${funcs.length} functions scanned · **${ranked.length} drifted groups** · ${exact.length} exact clones._`,
   "",
@@ -176,8 +176,8 @@ ranked.slice(0, 25).forEach((g, gi) => {
   const members = [...g].sort((x, y) => funcs[x].file.localeCompare(funcs[y].file));
   const sim = bestSim.get(find(members[0])) || 0;
   lines.push(`### ${gi + 1}. ${g.size} drifted copies · max sim ${Math.round(sim * 100)}% · ~${Math.max(...members.map((i) => funcs[i].loc))} LOC`);
-  members.forEach((i) => lines.push(`- \`${funcs[i].file}:${funcs[i].line}\` **${funcs[i].name}**() — ${funcs[i].loc} LOC`));
+  members.forEach((i) => lines.push(`- \`${funcs[i].file}:${funcs[i].line}\` **${funcs[i].name}**(), ${funcs[i].loc} LOC`));
   lines.push("");
 });
 fs.writeFileSync(OUT, lines.join("\n"));
-console.log(`wrote ${OUT} — ${funcs.length} fns, ${ranked.length} drifted groups, ${exact.length} exact clones`);
+console.log(`wrote ${OUT}, ${funcs.length} fns, ${ranked.length} drifted groups, ${exact.length} exact clones`);
