@@ -197,31 +197,31 @@ def _drifted_pair(lang: str) -> dict[str, str]:
              "            amount += line.price\n"
              "    return round(amount, 2)\n")
         return {"pkg/billing/discount.py": a, "pkg/billing/rebate.py": b}
-    a = ("export function applyDiscount(order: Line[], rate: number) {\n"
-         "  let total = 0;\n"
-         "  for (const item of order) {\n"
-         "    if (item.taxable) {\n"
-         "      total += item.price * rate;\n"
-         "    } else {\n"
-         "      total += item.price;\n"
-         "    }\n"
-         "  }\n"
-         "  if (total < 0) {\n"
-         "    total = 0;\n"
-         "  }\n"
-         "  return Math.round(total * 100) / 100;\n"
-         "}\n")
-    b = ("export function applyRebate(basket: Line[], factor: number) {\n"
-         "  let amount = 0;\n"
-         "  for (const line of basket) {\n"
-         "    if (line.taxable) {\n"
-         "      amount += line.price * factor;\n"
-         "    } else {\n"
-         "      amount += line.price;\n"
-         "    }\n"
-         "  }\n"
-         "  return Math.round(amount * 100) / 100;\n"
-         "}\n")
+    body = ("  let total = 0;\n"
+            "  let seen = 0;\n"
+            "  for (const item of order) {\n"
+            "    if (item.taxable) {\n"
+            "      total += item.price * rate;\n"
+            "    } else if (item.exempt) {\n"
+            "      total += item.price;\n"
+            "    } else {\n"
+            "      total += item.price * BASE;\n"
+            "    }\n"
+            "    if (item.rounded) {\n"
+            "      total = Math.floor(total);\n"
+            "    }\n"
+            "    seen += 1;\n"
+            "  }\n"
+            "  if (seen === 0) {\n"
+            "    return 0;\n"
+            "  }\n")
+    guard = ("  if (total < 0) {\n"
+             "    total = 0;\n"
+             "  }\n")
+    tail = "  return Math.round(total * 100) / 100;\n}\n"
+    a = "export function applyDiscount(order: Line[], rate: number) {\n" + body + guard + tail
+    b = ("export function applyRebate(order: Line[], rate: number) {\n"
+         + body + tail)
     return {"src/billing/discount.ts": a, "src/billing/rebate.ts": b}
 
 
@@ -248,13 +248,13 @@ def drift_ts_stdout_and_md_and_json():
         repo = make_repo(tmp, _drifted_pair("ts"))
         cwd_before = set(Path.cwd().iterdir())
         proc = run_lens("drift_lens_ts.js", str(repo))
-        assert "Drift lens (TypeScript)" in proc.stdout, proc.stdout[:400]
+        assert "Drift lens (TypeScript" in proc.stdout, proc.stdout[:400]
         assert set(Path.cwd().iterdir()) == cwd_before, \
             "the lens wrote into the current directory with no --md"
         md, js = tmp / "REPORT-drift-ts.md", tmp / "data-drift-ts.json"
         proc = run_lens("drift_lens_ts.js", str(repo), "--md", str(md), "--json", str(js))
         assert md.is_file() and js.is_file()
-        assert "Drift lens (TypeScript)" not in proc.stdout, \
+        assert "Drift lens (TypeScript" not in proc.stdout, \
             "report leaked to stdout despite --md"
         assert isinstance(load_json(js), list)
 
@@ -296,6 +296,23 @@ BUILDER_TS = """export function buildSettle(config: Config) {
   return settle;
 }
 """
+
+
+@case
+def drift_ts_scans_javascript_too():
+    """The TS lens is the TS/JS lens: hand-written .js drifts the same way."""
+    need_typescript()
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        plain = {k.replace(".ts", ".js"): v.replace(": Line[]", "").replace(": number", "")
+                 for k, v in _drifted_pair("ts").items()}
+        assert all(k.endswith(".js") for k in plain), plain
+        repo = make_repo(tmp, plain)
+        js = tmp / "data-drift-ts.json"
+        run_lens("drift_lens_ts.js", str(repo), "--md", str(tmp / "a.md"),
+                 "--json", str(js))
+        names = {m["name"] for group in load_json(js) for m in group}
+        assert {"applyDiscount", "applyRebate"} <= names, names
 
 
 @case

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* Drift lens (TypeScript), find copy-pasted code that DIVERGED.
+/* Drift lens (TypeScript/JavaScript), find copy-pasted code that DIVERGED.
  *
  * The TypeScript sibling of drift_lens.py, which could only read .py. The bug
  * class both exist to catch: one copy of a hand-written mapper or buffer-parser
@@ -7,7 +7,8 @@
  * itself across the codebase. Nothing fails, the copies just answer
  * differently, and only under the inputs the fix was about.
  *
- * This scans .ts/.tsx with the real TypeScript compiler rather than a regex,
+ * This scans .ts/.tsx/.js/.jsx/.mjs/.cjs with the real TypeScript compiler
+ * rather than a regex,
  * so it sees functions the Python lens structurally cannot.
  *
  * Method (mirrors the Python lens): extract every function via the TS AST,
@@ -80,11 +81,22 @@ const SHINGLE_K = 5;
 const MAX_FANOUT = 25; // ignore boilerplate shingles shared by > this many fns
 const MIN_SHARED = 8;
 const DRIFT_LO = 0.8;
-const DENY = [".test.", ".spec.", "/__tests__/", ".d.ts", "/__mocks__/", ".stories.", "/node_modules/"];
+const DENY = [".test.", ".spec.", "/__tests__/", ".d.ts", "/__mocks__/", ".stories.", "/node_modules/", "/dist/", "/build/", "/.next/", "/coverage/", ".min."];
+const EXTS = ["*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs"];
 
 function trackedFiles() {
-  const out = cp.execSync(`git -C ${REPO} ls-files '*.ts' '*.tsx'`, { encoding: "utf8", maxBuffer: 1 << 26 });
+  // The compiler parses JavaScript as happily as TypeScript, and a repo's
+  // hand-written .js is exactly as prone to a clone drifting as its .ts.
+  const out = cp.execSync(`git -C ${REPO} ls-files ${EXTS.map((e) => `'${e}'`).join(" ")}`, { encoding: "utf8", maxBuffer: 1 << 26 });
   return out.split("\n").filter((f) => f && !DENY.some((d) => f.includes(d)));
+}
+
+function scriptKind(rel) {
+  const ext = path.extname(rel);
+  if (ext === ".tsx") return ts.ScriptKind.TSX;
+  if (ext === ".jsx") return ts.ScriptKind.JSX;
+  if (ext === ".js" || ext === ".mjs" || ext === ".cjs") return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
 }
 
 // Normalize one function's source text to a token stream.
@@ -134,7 +146,7 @@ for (const rel of trackedFiles()) {
   }
   let sf;
   try {
-    sf = ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, rel.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+    sf = ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, scriptKind(rel));
   } catch {
     continue;
   }
@@ -227,7 +239,7 @@ const ranked = [...groups.values()].sort((g1, g2) => {
 });
 
 const lines = [
-  `# Drift lens (TypeScript), \`${REPO}\``,
+  `# Drift lens (TypeScript/JavaScript), \`${REPO}\``,
   "",
   `_${funcs.length} functions scanned · **${ranked.length} drifted groups** · ${exact.length} exact clones._`,
   "",
