@@ -152,25 +152,25 @@ def build_plan(args, repo: Path, out: Path) -> list[dict]:
 
     plan = [
         {"name": "techdebt", "cmd": [PY, str(HERE / "score_targets.py"), str(repo),
-                                     "--since", args.since, "--top", str(args.top),
+                                     "--since", args.since, "--top", str(args.report_top),
                                      "--md", md("techdebt"), "--json", js("techdebt")]},
         # Reuses the ranking the tech-debt pass just wrote, rather than
         # recomputing churn and complexity for the whole repo a second time.
         {"name": "coverage", "cmd": [PY, str(HERE / "coverage_gap.py"), str(repo),
                                      "--scores", js("techdebt"),
                                      "--tests-dir", args.tests_dir,
-                                     "--top", str(args.top),
+                                     "--top", str(args.report_top),
                                      "--md", md("coverage"), "--json", js("coverage")],
          "after": "techdebt"},
         {"name": "security", "cmd": [PY, str(HERE / "security_lens.py"), str(repo),
-                                     *src_root_flags, "--top", str(args.top),
+                                     *src_root_flags, "--top", str(args.report_top),
                                      *(["--app-module", args.app_module] if args.app_module else []),
                                      "--md", md("security"), "--json", js("security")]},
         {"name": "deadcode", "cmd": [PY, str(HERE / "deadcode_lens.py"), str(repo),
-                                     *src_root_flags, "--top", str(args.top),
+                                     *src_root_flags, "--top", str(args.report_top),
                                      "--md", md("deadcode"), "--json", js("deadcode")]},
         {"name": "arch", "cmd": [PY, str(HERE / "arch_lens.py"), str(repo),
-                                 "--ref", args.ref, "--top", str(args.top),
+                                 "--ref", args.ref, "--top", str(args.report_top),
                                  "--md", md("arch"), "--json", js("arch")]},
         {"name": "drift", "cmd": [PY, str(HERE / "drift_lens.py"), str(repo),
                                   "--md", md("drift"), "--json", js("drift")],
@@ -187,7 +187,7 @@ def build_plan(args, repo: Path, out: Path) -> list[dict]:
         {"name": "opportunity", "cmd": [PY, str(HERE / "opportunity_v2.py"), str(repo),
                                         "--data", js("techdebt"),
                                         "--gh-repo", args.gh_repo or "",
-                                        "--ref", args.ref, "--top", str(args.top),
+                                        "--ref", args.ref, "--top", str(args.report_top),
                                         "--md", md("opportunity"),
                                         "--json", js("opportunity")],
          "after": "techdebt",
@@ -241,9 +241,10 @@ def run_plan(plan: list[dict], out: Path, verbose: bool) -> list[dict]:
 def render_index(repo: str, out: Path, results: list[dict], top: int,
                  args) -> str:
     lines = [
-        f"# Lens index, `{repo}`",
+        f"# Lens index, `{Path(repo).resolve().name}`",
         "",
-        f"_Every lens, top {top}. Written by `run_all.py` into `{out}/`. "
+        f"_Every lens, top {top} here; the linked reports carry more. "
+        f"Written by `run_all.py` into `{out}/`. "
         f"Churn window: {args.since} · git ref: {args.ref}._",
         "",
         "> **Recall filters, not verdicts.** Each row is a candidate to confirm, "
@@ -302,8 +303,11 @@ def main() -> None:
                     help="directory for the reports and data (default: lens-out)")
     ap.add_argument("--since", default="180 days ago", help="git churn window")
     ap.add_argument("--top", type=int, default=10,
-                    help="rows per lens in the index, and --top for each lens "
-                         "(default: 10)")
+                    help="rows per lens in the index (default: 10)")
+    ap.add_argument("--report-top", type=int, default=40,
+                    help="rows in each lens's own report (default: 40). Kept "
+                         "separate from --top so a short index does not "
+                         "truncate the full reports it links to.")
     ap.add_argument("--ref", default="HEAD", help="git ref the arch lens reads")
     ap.add_argument("--src-root", action="append", metavar="DIR",
                     help="source root for the security and dead-code lenses; "

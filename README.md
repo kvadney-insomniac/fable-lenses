@@ -93,9 +93,9 @@ lens and opportunity v2); the TS/JS drift lens needs node with a resolvable
 `skipped: reason` rather than failing the run, and a lens that errors is
 recorded with its message while the other lenses still report.
 
-Useful flags: `--since` (churn window), `--top` (rows per lens), `--ref` (the
-git ref the arch lens reads), `--src-root`, `--tests-dir`, `--app-module`,
-`--skip LENS`.
+Useful flags: `--since` (churn window), `--top` (rows per lens in the index),
+`--report-top` (rows in each lens's own report), `--ref` (the git ref the arch
+lens reads), `--src-root`, `--tests-dir`, `--app-module`, `--skip LENS`.
 
 ### Or one lens at a time
 
@@ -141,8 +141,10 @@ python3 lenses/arch_lens.py /path/to/repo --md REPORT-arch.md
 | `ci_lens.py` | stdout | yes | yes | needs `gh` |
 | `opportunity_v2.py` | `TARGETS-v2.md` | yes | `--json` | needs `gh`; `--data` is a `score_targets.py --json` file |
 
-No lens writes anything into the repository it is scanning, and none of them
-writes into the current directory unless you name a path there.
+No lens writes anything into the repository it is scanning. Only
+`opportunity_v2.py` writes into the current directory without being asked, its
+`--md` defaults to `TARGETS-v2.md`, which the triage tooling reads; every other
+script prints to stdout until you name a path.
 
 Lens output, `REPORT-*.md`, `data-*.json`, is git-ignored by default. Those
 files are about *your* codebase and routinely name internal services, routes
