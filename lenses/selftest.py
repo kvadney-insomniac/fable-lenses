@@ -384,6 +384,63 @@ def arch_python_graph_still_works():
 
 
 # --------------------------------------------------------------------------- #
+# deadcode: Next.js convention files and build-wired entrypoints are not dead
+# --------------------------------------------------------------------------- #
+def _filler(n: int, prefix: str = "export const") -> str:
+    """Enough lines to clear the lens's 10-LOC floor."""
+    return "".join(f"{prefix} pad{prefix[-1]}{i} = {i};\n" for i in range(n))
+
+
+DEADCODE_FIXTURE = {
+    "package.json": json.dumps({
+        "name": "fixture",
+        "scripts": {"seed": "tsx scripts/seedLedger.ts", "build": "next build"},
+    }, indent=2) + "\n",
+    "next.config.mjs": (
+        "const config = { webpack: (c) => c };\n"
+        'export { runtimeShim } from "./src/support/runtimeShim";\n'
+        "export default config;\n"
+    ),
+    "sentry.client.config.ts": (
+        'import "./src/support/telemetryInit";\n'
+        "export const dsn = String(process.env.DSN);\n"
+    ),
+    # Next.js loads these by name. None of them is imported anywhere.
+    "src/instrumentation-client.ts": "export function onRouterTransitionStart() {}\n" + _filler(12),
+    "src/app/global-error.tsx": "export default function GlobalError() { return null; }\n" + _filler(12),
+    "src/app/dashboard/page.tsx": "export default function Page() { return null; }\n" + _filler(12),
+    "src/middleware.ts": "export function middleware() {}\n" + _filler(12),
+    # Referenced only by a config file or an npm script.
+    "src/support/runtimeShim.ts": "export const runtimeShim = 1;\n" + _filler(12),
+    "src/support/telemetryInit.ts": "export const telemetryInit = 1;\n" + _filler(12),
+    "scripts/seedLedger.ts": "export const seed = 1;\n" + _filler(12),
+    # Genuinely unreferenced, and named like a convention file but NOT under app/.
+    "src/components/error.tsx": "export function ErrorPanel() { return null; }\n" + _filler(12),
+    "src/components/OrphanCard.tsx": "export function OrphanCard() { return null; }\n" + _filler(12),
+}
+
+
+@case
+def deadcode_skips_next_conventions_and_config_wired_files():
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        repo = make_repo(tmp, DEADCODE_FIXTURE)
+        js = tmp / "data-deadcode.json"
+        run_lens("deadcode_lens.py", str(repo), "--src-root", ".",
+                 "--md", str(tmp / "a.md"), "--json", str(js))
+        flagged = {r["file"] for r in load_json(js)["files"]}
+        for alive in ("src/instrumentation-client.ts", "src/app/global-error.tsx",
+                      "src/app/dashboard/page.tsx", "src/middleware.ts",
+                      "src/support/runtimeShim.ts", "src/support/telemetryInit.ts",
+                      "scripts/seedLedger.ts"):
+            assert alive not in flagged, f"{alive} flagged as dead"
+        # The recall side must survive: a real orphan is still reported, and a
+        # convention NAME outside app/ is an ordinary component, not an entrypoint.
+        assert "src/components/OrphanCard.tsx" in flagged, flagged
+        assert "src/components/error.tsx" in flagged, flagged
+
+
+# --------------------------------------------------------------------------- #
 def main() -> int:
     wanted = sys.argv[1:]
     selected = [(n, f) for n, f in CASES
