@@ -260,6 +260,130 @@ def drift_ts_stdout_and_md_and_json():
 
 
 # --------------------------------------------------------------------------- #
+# arch: TS/JS import resolution (tsconfig paths, index files, .tsx)
+# --------------------------------------------------------------------------- #
+NEXT_FIXTURE = {
+    # JSONC on purpose: comments and a trailing comma, which json.loads rejects.
+    "tsconfig.json": (
+        "{\n"
+        "  // path aliases, as every Next.js app ships them\n"
+        '  "compilerOptions": {\n'
+        '    "baseUrl": ".",\n'
+        '    "paths": { "@/*": ["./src/*"] },\n'
+        "  }\n"
+        "}\n"
+    ),
+    "src/app/dashboard/page.tsx": (
+        'import { Panel } from "@/components/Panel";\n'
+        'import { formatMoney } from "@/lib/format";\n'
+        'import { columns } from "./columns";\n'
+        "export default function Page() { return <Panel cols={columns} "
+        "total={formatMoney(1)} />; }\n"
+    ),
+    "src/app/dashboard/columns.ts": 'export const columns = ["a", "b"];\n',
+    "src/components/Panel/index.tsx": (
+        'import { useLedger } from "@/hooks/useLedger";\n'
+        "export function Panel(props: any) { return <div>{useLedger().n}</div>; }\n"
+    ),
+    "src/hooks/useLedger.ts": (
+        'import { formatMoney } from "../lib/format";\n'
+        "export function useLedger() { return { n: formatMoney(2) }; }\n"
+    ),
+    # A utility reaching back up into components: the violation the lens exists for.
+    "src/lib/format.ts": (
+        'import { Panel } from "@/components/Panel";\n'
+        "export function formatMoney(n: number) { return String(n) + String(!!Panel); }\n"
+    ),
+    "src/lib/format.test.ts": 'import { formatMoney } from "./format";\n',
+    "src/types/ledger.d.ts": "export type Ledger = { n: number };\n",
+}
+
+
+@case
+def arch_resolves_ts_imports():
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        repo = make_repo(tmp, NEXT_FIXTURE)
+        js = tmp / "data-arch.json"
+        run_lens("arch_lens.py", str(repo), "--md", str(tmp / "a.md"), "--json", str(js))
+        data = load_json(js)
+        assert data["edges"] >= 5, f"expected a connected graph, got {data['edges']} edges"
+        assert data["tsconfig_paths"] == ["@/*"], data["tsconfig_paths"]
+        mods = {r["module"] for r in data["rows"]}
+        # `@/components/Panel` -> Panel/index.tsx: alias + index-file resolution.
+        assert "src/components/Panel/index.tsx" in mods, mods
+        assert not any(m.endswith(".d.ts") or ".test." in m for m in mods), mods
+        by_mod = {r["module"]: r for r in data["rows"]}
+        fmt = by_mod.get("src/lib/format.ts")
+        assert fmt and fmt["violations"], f"util -> components not flagged: {fmt}"
+        assert fmt["layer"] == "util", fmt
+        assert by_mod["src/components/Panel/index.tsx"]["fan_in"] >= 2, by_mod
+
+
+@case
+def arch_ts_layer_of_next_app_dirs():
+    """app/ components/ hooks/ contexts/ lib/ each land in their own layer."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        files = dict(NEXT_FIXTURE)
+        files["src/contexts/ThemeContext.tsx"] = (
+            'import { formatMoney } from "@/lib/format";\n'
+            "export const Theme = formatMoney;\n")
+        repo = make_repo(tmp, files)
+        js = tmp / "data-arch.json"
+        run_lens("arch_lens.py", str(repo), "--md", str(tmp / "a.md"), "--json", str(js))
+        layers = {r["module"]: r["layer"] for r in load_json(js)["rows"]}
+        for module, expected in (("src/app/dashboard/page.tsx", "app"),
+                                 ("src/components/Panel/index.tsx", "components"),
+                                 ("src/hooks/useLedger.ts", "hooks"),
+                                 ("src/contexts/ThemeContext.tsx", "hooks"),
+                                 ("src/lib/format.ts", "util")):
+            if module in layers:  # low-fan-in modules are discarded by design
+                assert layers[module] == expected, f"{module}: {layers[module]}"
+
+
+@case
+def arch_ts_app_importing_app_is_not_a_violation_by_default():
+    """Next.js colocation inside app/ is normal; --strict-top-layer opts in."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        repo = make_repo(tmp, NEXT_FIXTURE)
+        loose, strict = tmp / "loose.json", tmp / "strict.json"
+        run_lens("arch_lens.py", str(repo), "--md", str(tmp / "a.md"), "--json", str(loose))
+        run_lens("arch_lens.py", str(repo), "--strict-top-layer",
+                 "--md", str(tmp / "b.md"), "--json", str(strict))
+
+        def app_self(data):
+            return [v for r in data["rows"] for v in r["violations"]
+                    if v.startswith("app->app")]
+
+        assert not app_self(load_json(loose)), "app -> app flagged by default"
+        assert app_self(load_json(strict)), "--strict-top-layer flagged nothing"
+
+
+@case
+def arch_python_graph_still_works():
+    """The Python path must keep resolving package and sibling imports."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        repo = make_repo(tmp, {
+            "app/__init__.py": "",
+            "app/routes/__init__.py": "",
+            "app/routes/billing.py": "from app.services.invoice import build\n\n\ndef get():\n    return build()\n",
+            "app/services/__init__.py": "",
+            "app/services/invoice.py": "from app.routes.billing import get\n\n\ndef build():\n    return get\n",
+        })
+        js = tmp / "data-arch.json"
+        run_lens("arch_lens.py", str(repo), "--md", str(tmp / "a.md"), "--json", str(js))
+        data = load_json(js)
+        assert data["edges"] >= 2, data["edges"]
+        by_mod = {r["module"]: r for r in data["rows"]}
+        # service importing a route reaches up a layer: still a violation.
+        assert by_mod["app.services.invoice"]["violations"], by_mod
+        assert data["cycles"], "the mutual import should be an SCC"
+
+
+# --------------------------------------------------------------------------- #
 def main() -> int:
     wanted = sys.argv[1:]
     selected = [(n, f) for n, f in CASES
