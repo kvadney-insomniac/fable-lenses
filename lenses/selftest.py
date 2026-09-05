@@ -662,6 +662,54 @@ def security_exec_on_ts_needs_child_process():
 
 
 # --------------------------------------------------------------------------- #
+# run_all: one command, one output directory, one index
+# --------------------------------------------------------------------------- #
+@case
+def run_all_writes_every_report_and_an_index():
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        files = dict(NEXT_FIXTURE)
+        files.update(COVERAGE_FIXTURE)
+        files.update(_drifted_pair("py"))
+        repo = make_repo(tmp, files, commits=2)
+        out = tmp / "lens-out"
+        proc = run_lens("run_all.py", str(repo), "--out", str(out),
+                        "--since", "10 years ago", "--top", "5",
+                        expect_ok=False)
+        assert proc.returncode == 0, f"a lens failed:\n{proc.stderr}"
+        index = out / "REPORT-index.md"
+        assert index.is_file(), "no index written"
+        body = index.read_text(encoding="utf-8")
+
+        for name in ("techdebt", "coverage", "security", "deadcode", "arch", "drift"):
+            assert (out / f"REPORT-{name}.md").is_file(), f"no report for {name}"
+            assert (out / f"data-{name}.json").is_file(), f"no data for {name}"
+            assert f"## {name}" in body, f"{name} missing from the index"
+        # The GitHub lenses are recorded as skipped, not silently dropped.
+        for name in ("ci", "opportunity"):
+            assert f"| {name} |" in body and "needs --gh-repo" in body, body
+        # The index carries the exact command, so a row can be reproduced.
+        assert "score_targets.py" in body and "--since" in body
+        assert "Recall filters, not verdicts" in body
+
+
+@case
+def run_all_records_a_failing_lens_instead_of_dying():
+    """A repo with no git history at all: the run still produces an index."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        repo = tmp / "not-a-repo"
+        (repo / "pkg").mkdir(parents=True)
+        (repo / "pkg" / "thing.py").write_text("def thing():\n    return 1\n")
+        out = tmp / "lens-out"
+        proc = run_lens("run_all.py", str(repo), "--out", str(out),
+                        expect_ok=False)
+        assert (out / "REPORT-index.md").is_file(), \
+            "no index written when a lens could not run"
+        assert "not a git checkout" in proc.stderr, proc.stderr
+
+
+# --------------------------------------------------------------------------- #
 def main() -> int:
     wanted = sys.argv[1:]
     selected = [(n, f) for n, f in CASES
