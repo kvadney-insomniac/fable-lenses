@@ -58,9 +58,20 @@ PUBLIC / ALREADY-PROTECTED PATHS
     ``/api``) will hide real missing-auth bugs without saying so. Prefer several
     specific tokens over one broad one, and re-read the list when it grows.
 
+ROUTER-LEVEL AUTH
+    FastAPI applies ``APIRouter(dependencies=[...])`` and
+    ``include_router(..., dependencies=[...])`` to every handler underneath, so a
+    handler that names no dependency of its own can still be fully protected.
+    Both are now read: the first from the handler's own file, the second from
+    the wiring module (``--app-module``, default the first of ``app/main.py``,
+    ``main.py``, ``src/main.py`` that exists). A dependency list only counts as
+    auth if the list itself matches the same auth pattern the per-handler check
+    uses, so ``dependencies=[Depends(rate_limit)]`` suppresses nothing.
+    Suppressed handlers are COUNTED IN THE REPORT rather than deleted from it.
+
 Usage:
     python3 security_lens.py <repo_path> [--src-root src] [--public-paths /ping]
-        [--top 40] [--md out.md] [--json out.json]
+        [--app-module app/main.py] [--top 40] [--md out.md] [--json out.json]
 """
 from __future__ import annotations
 
@@ -209,6 +220,171 @@ _RISK = [
 _ROUTE_DECORATOR = re.compile(r"@\w+\.(get|post|put|patch|delete)\s*\(\s*['\"]([^'\"]+)", re.I)
 _AUTH_DEP = re.compile(r"get_current_user|require_|Depends\(\s*(?:get_current|require)")
 
+# `exec(` on TS/JS is almost always `SOME_REGEX.exec(str)`, which is not code
+# execution at all. Node's real one comes from child_process, so the import is
+# the gate: no import, no finding.
+_JS_CHILD_PROCESS_IMPORT = re.compile(
+    r"""['"](?:node:)?child_process['"]"""
+)
+# A bare call to one of the child_process functions. `(?<![.\w])` is what keeps
+# `pattern.exec(s)` and `this.spawn()` out.
+_JS_EXEC_CALL = re.compile(
+    r"(?<![.\w])(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\s*\("
+)
+# The member form, `cp.exec(...)` / `childProcess.spawn(...)`.
+_JS_EXEC_MEMBER = re.compile(
+    r"\b(?:cp|proc|child_process|childProcess)\.(?:exec|execSync|execFile|"
+    r"execFileSync|spawn|spawnSync|fork)\s*\("
+)
+
+
+def js_exec_calls(body: str) -> int:
+    """Count real child_process invocations in a TS/JS file (0 without the import)."""
+    if not _JS_CHILD_PROCESS_IMPORT.search(body):
+        return 0
+    return len(_JS_EXEC_CALL.findall(body)) + len(_JS_EXEC_MEMBER.findall(body))
+
+
+def call_arguments(src: str, callee: str, limit: int = 40000):
+    """Argument text of each ``callee(...)`` call, with parentheses balanced.
+
+    A regex cannot do this: `APIRouter(prefix=make_prefix(), dependencies=[...])`
+    ends the naive `[^)]*` match inside `make_prefix()`, before the argument we
+    care about. Quotes are not tracked, so a literal paren inside a string can
+    end an argument list early; that fails toward reading *less* text, which
+    for an auth check means reporting the handler rather than suppressing it.
+    """
+    for m in re.finditer(rf"\b{re.escape(callee)}\s*\(", src):
+        start = m.end() - 1
+        depth = 0
+        for j in range(start, min(len(src), start + limit)):
+            ch = src[j]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    yield src[start + 1: j]
+                    break
+
+
+def _auth_dependency_list(args: str) -> bool:
+    """A ``dependencies=[...]`` argument that actually carries an auth dependency.
+
+    `dependencies=[Depends(rate_limit)]` is not auth, and treating it as auth
+    would silently delete real findings. The same `_AUTH_DEP` test the
+    per-handler check uses is applied to the list, so the two agree.
+    """
+    m = re.search(r"dependencies\s*=\s*\[", args)
+    if not m:
+        return False
+    depth, start = 0, m.end() - 1
+    for j in range(start, len(args)):
+        if args[j] == "[":
+            depth += 1
+        elif args[j] == "]":
+            depth -= 1
+            if depth == 0:
+                return bool(_AUTH_DEP.search(args[start:j + 1]))
+    return bool(_AUTH_DEP.search(args[start:]))
+
+
+def router_level_auth(src: str) -> bool:
+    """Does this file build its own ``APIRouter(dependencies=[auth])``?
+
+    FastAPI applies those to every route on the router, so the handlers below
+    are protected even though not one of them names a dependency.
+    """
+    return any(_auth_dependency_list(args) for args in call_arguments(src, "APIRouter"))
+
+
+# A wiring module's imports, both shapes. The parenthesized one spans lines and
+# is the common shape when a service mounts fifty routers, so a single-line
+# regex resolves almost none of them.
+_FROM_PAREN = re.compile(r"^[ \t]*from[ \t]+([\w\.]+)[ \t]+import[ \t]*\(([^)]*)\)",
+                         re.M | re.S)
+_FROM_PLAIN = re.compile(r"^[ \t]*from[ \t]+([\w\.]+)[ \t]+import[ \t]+([^(\n]+)$", re.M)
+
+
+def _import_aliases(src: str) -> dict[str, str]:
+    """{local name: dotted module path} for the imports in a wiring module."""
+    aliases: dict[str, str] = {}
+    for stem, names in _FROM_PAREN.findall(src) + _FROM_PLAIN.findall(src):
+        names = re.sub(r"#[^\n]*", "", names)
+        for part in names.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            bits = part.split()
+            if len(bits) == 3 and bits[1] == "as":
+                aliases[bits[2]] = f"{stem}.{bits[0]}"
+            elif len(bits) == 1:
+                aliases[bits[0]] = f"{stem}.{bits[0]}"
+    for mod, alias in re.findall(r"^\s*import\s+([\w\.]+)(?:\s+as\s+(\w+))?", src, re.M):
+        aliases[alias or mod.split(".")[0]] = mod
+    return aliases
+
+
+def _module_to_file(dotted: str, tracked: set[str]) -> str | None:
+    """Resolve a dotted path to a tracked .py file, dropping trailing symbols."""
+    parts = dotted.split(".")
+    for cut in range(len(parts), 0, -1):
+        base = "/".join(parts[:cut])
+        for cand in (f"{base}.py", f"{base}/__init__.py"):
+            if cand in tracked:
+                return cand
+    return None
+
+
+def find_app_module(repo_path: Path, requested: str | None,
+                    src_roots: tuple[str, ...]) -> str | None:
+    """The module that wires routers onto the app. Default: app/main.py."""
+    if requested:
+        return requested if (repo_path / requested).is_file() else None
+    for cand in ("app/main.py", "main.py", "src/main.py",
+                 *(f"{r}main.py" for r in src_roots if r)):
+        if (repo_path / cand).is_file():
+            return cand
+    return None
+
+
+def include_router_auth(repo_path: Path, app_module: str | None,
+                        tracked: list[str]) -> dict[str, str]:
+    """{route file: reason} for routers mounted with an auth dependency list.
+
+    ``app.include_router(chat.router, dependencies=[Depends(get_current_user)])``
+    protects every handler in the router's module, and it lives in a different
+    file from the handlers, so a per-file grep cannot see it at all. This is the
+    single biggest source of `route_no_auth_dep` noise on a real FastAPI app.
+    """
+    if not app_module:
+        return {}
+    try:
+        src = (repo_path / app_module).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return {}
+    aliases = _import_aliases(src)
+    files = set(tracked)
+    protected: dict[str, str] = {}
+    for args in call_arguments(src, "include_router"):
+        if not _auth_dependency_list(args):
+            continue
+        first = args.split(",", 1)[0].strip()
+        m = re.match(r"([\w\.]+)", first)
+        if not m:
+            continue
+        ref = m.group(1)
+        head, _, rest = ref.partition(".")
+        dotted = aliases.get(head, head) + (f".{rest}" if rest else "")
+        target = _module_to_file(dotted, files)
+        if not target:
+            # last resort: a unique file whose stem is the referenced name
+            cands = [f for f in files if Path(f).stem == head]
+            target = cands[0] if len(cands) == 1 else None
+        if target:
+            protected[target] = f"include_router(dependencies=[...]) in {app_module}"
+    return protected
+
 
 def _strip_comments(src: str, is_py: bool) -> str:
     """Crude comment strip so we don't count risk tokens inside comments."""
@@ -230,13 +406,25 @@ _PY_ONLY_PATTERNS = {
     "subprocess", "shell_true", "os_system", "pickle", "yaml_unsafe",
     "marshal", "urlopen", "weak_hash", "homerolled_crypto",
     "insecure_random", "verify_false",
+    # `exec(` in TS/JS is `RegExp.prototype.exec`, not code execution. The
+    # Node equivalent is handled by `js_exec_calls`, which needs the
+    # child_process import before it will count anything.
+    "exec",
 }
 
 
 def vuln_signals(
-    src: str, is_py: bool, file_rel: str, public_paths: tuple[str, ...]
-) -> tuple[float, dict, list]:
-    """Return (weighted_score, per-pattern counts, list of route auth gaps)."""
+    src: str, is_py: bool, file_rel: str, public_paths: tuple[str, ...],
+    router_auth: str | None = None,
+) -> tuple[float, dict, list, list, str | None]:
+    """Return (score, per-pattern counts, auth gaps, suppressed gaps, reason).
+
+    ``router_auth`` is a reason string when this file's handlers are covered by
+    a router-level dependency list (its own ``APIRouter(dependencies=[...])``,
+    or the ``include_router`` that mounts it). Suppressed handlers are returned
+    separately rather than dropped, so the report can say how many were hidden
+    and why: a security lens that quietly deletes rows is worse than a noisy one.
+    """
     body = _strip_comments(src, is_py)
     counts: dict[str, int] = {}
     score = 0.0
@@ -247,6 +435,11 @@ def vuln_signals(
         if n:
             counts[name] = n
             score += n * weight
+    if not is_py:
+        n = js_exec_calls(body)
+        if n:
+            counts["child_process_exec"] = n
+            score += n * 5
 
     # Route handlers missing an explicit auth dependency. We inspect the ~12 lines
     # following each route decorator (decorator + signature window).
@@ -259,7 +452,11 @@ def vuln_signals(
     # cache wrapper, a test client helper, will be inspected too. That is rare,
     # and it fails toward over-reporting rather than silence.
     auth_gaps: list[str] = []
+    suppressed: list[str] = []
+    reason = router_auth
     if is_py:
+        if reason is None and router_level_auth(body):
+            reason = "APIRouter(dependencies=[...]) in this file"
         lines = body.splitlines()
         for i, ln in enumerate(lines):
             m = _ROUTE_DECORATOR.search(ln)
@@ -270,11 +467,12 @@ def vuln_signals(
                 continue
             window = "\n".join(lines[i : i + 12])
             if not _AUTH_DEP.search(window):
-                auth_gaps.append(f"{m.group(1).upper()} {m.group(2)}")
+                (suppressed if reason else auth_gaps).append(
+                    f"{m.group(1).upper()} {m.group(2)}")
         if auth_gaps:
             counts["route_no_auth_dep"] = len(auth_gaps)
             score += len(auth_gaps) * 3
-    return round(score, 1), counts, auth_gaps
+    return round(score, 1), counts, auth_gaps, suppressed, (reason if suppressed else None)
 
 
 def decorated_route_path(file_rel: str, decorated: str) -> str:
@@ -385,8 +583,9 @@ def role_bonus(file_rel: str, src: str) -> tuple[int, list[str]]:
 # Driver
 # --------------------------------------------------------------------------- #
 def score_repo(
-    repo: str, src_roots: tuple[str, ...], public_paths: tuple[str, ...]
-) -> list[dict]:
+    repo: str, src_roots: tuple[str, ...], public_paths: tuple[str, ...],
+    app_module: str | None = None,
+) -> tuple[list[dict], str | None]:
     repo_path = Path(repo)
 
     tracked = [
@@ -397,6 +596,10 @@ def score_repo(
         and any(f.startswith(r) for r in src_roots)
     ]
     imported_by = build_import_graph(tracked, repo_path, src_roots)
+    # The wiring module is read once; every router it mounts with an auth
+    # dependency list covers the handlers in that router's own file.
+    wiring = find_app_module(repo_path, app_module, src_roots)
+    mounted_auth = include_router_auth(repo_path, wiring, tracked)
 
     rows: list[dict] = []
     for f in tracked:
@@ -405,7 +608,8 @@ def score_repo(
         except OSError:
             continue
         is_py = f.endswith(".py")
-        vuln, counts, auth_gaps = vuln_signals(src, is_py, f, public_paths)
+        vuln, counts, auth_gaps, suppressed, reason = vuln_signals(
+            src, is_py, f, public_paths, mounted_auth.get(f))
         rbonus, roles = role_bonus(f, src)
         nimp = imported_by.get(f, 0)
         rows.append(
@@ -417,6 +621,8 @@ def score_repo(
                 "vuln_raw": vuln,
                 "patterns": counts,
                 "auth_gaps": auth_gaps,
+                "auth_suppressed": suppressed,
+                "auth_suppressed_reason": reason,
             }
         )
 
@@ -428,7 +634,7 @@ def score_repo(
         r["score"] = r["reach"] * r["vuln"]
     # tie-break by raw vuln (the security-relevant axis), then reach
     rows.sort(key=lambda r: (r["score"], r["vuln_raw"], r["reach_raw"]), reverse=True)
-    return rows
+    return rows, wiring
 
 
 def _scan_description(rows: list[dict], src_roots: tuple[str, ...]) -> str:
@@ -449,6 +655,7 @@ def render_md(
     top: int,
     src_roots: tuple[str, ...],
     public_paths: tuple[str, ...],
+    wiring: str | None = None,
 ) -> str:
     target = [r for r in rows if r["reach"] >= 4 and r["vuln"] >= 4]
     # Key the language caveats on what was actually scanned. Doing this by source
@@ -467,11 +674,14 @@ def render_md(
         "for a premium model (the Carlini use case) to confirm, high density of "
         "risky patterns ≠ a vulnerability. Known over-reporting:",
         ">",
-        "> - **`route_no_auth_dep`**, this reads only the handler's decorator and "
-        "signature. Auth applied at the middleware layer, at the router level "
-        "(`dependencies=[...]`), or through a helper dependency is invisible to "
-        "the grep, so a flagged handler may be perfectly well protected. Confirm "
-        "each row against your own auth wiring before acting on it.",
+        "> - **`route_no_auth_dep`**, this reads the handler's decorator and "
+        "signature, plus two router-level sources: an "
+        "`APIRouter(dependencies=[...])` built in the same file, and the "
+        "`include_router(..., dependencies=[...])` that mounts it in the wiring "
+        "module. Auth applied by middleware, or through a helper dependency "
+        "whose name does not look like auth, is still invisible, so a flagged "
+        "handler may be perfectly well protected. Confirm each row against your "
+        "own auth wiring before acting on it.",
         "> - **`raw_sql_exec`** counts every `.execute(`/`text(`, most are "
         "parameterized and safe. The dangerous siblings are `fstring_sql` / "
         "`percent_sql` / `str_concat_sql`.",
@@ -486,15 +696,17 @@ def render_md(
     if has_ts:
         # Replace the trailing blank line so this stays inside the same blockquote.
         out[-1:] = [
-            "> - **The client-side vuln signal is THIN.** SQL/exec/pickle/SSRF/"
-            "crypto patterns are Python-only (skipped on TS/JS), so the only live "
-            "signals on a TS/JS file are `fetch_var` (a templated-URL fetch, "
-            "weight 1), an `.exec()` regex false positive, and "
-            "`dangerouslySetInnerHTML` / literal secrets. So a top-quadrant TS/JS "
-            "file is usually **reach-driven**, a widely-imported API client with "
-            "one templated fetch, NOT a hot finding. Real client-side risk (XSS "
-            "sinks, token handling, auth-redirect flows) needs human/LLM review, "
-            "not this grep.",
+            "> - **The client-side vuln signal is THIN.** SQL/pickle/SSRF/crypto "
+            "patterns are Python-only (skipped on TS/JS), and so is bare `exec(`, "
+            "which in TS/JS is `RegExp.prototype.exec` rather than code "
+            "execution. Node's real one is `child_process_exec`, counted only in "
+            "a file that imports `child_process`. The remaining live signals are "
+            "`fetch_var` (a templated-URL fetch, weight 1), `eval`, "
+            "`dangerouslySetInnerHTML` and literal secrets. So a top-quadrant "
+            "TS/JS file is usually **reach-driven**, a widely-imported API client "
+            "with one templated fetch, NOT a hot finding. Real client-side risk "
+            "(XSS sinks, token handling, auth-redirect flows) needs human/LLM "
+            "review, not this grep.",
             "",
         ]
 
@@ -522,7 +734,8 @@ def render_md(
 
     # Spotlight: route handlers with no detected auth dependency (candidate list).
     gaps = [r for r in rows if r["auth_gaps"]]
-    if gaps:
+    covered = [r for r in rows if r["auth_suppressed"]]
+    if gaps or covered:
         suppressed = ", ".join(f"`{p}`" for p in public_paths)
         out.append("## ⚠️ Route handlers with no detected auth dependency (candidates)")
         out.append("")
@@ -546,6 +759,30 @@ def render_md(
             hs = ", ".join(f"`{g}`" for g in r["auth_gaps"][:6])
             out.append(f"| `{r['file']}` | {hs} |")
         out.append("")
+        if covered:
+            n_handlers = sum(len(r["auth_suppressed"]) for r in covered)
+            by_reason: dict[str, int] = {}
+            for r in covered:
+                by_reason[r["auth_suppressed_reason"]] = (
+                    by_reason.get(r["auth_suppressed_reason"], 0) + 1)
+            detail = "; ".join(f"{n} file(s) by `{why}`"
+                               for why, n in sorted(by_reason.items()))
+            out.append(
+                f"_**{n_handlers} further handlers in {len(covered)} files are not "
+                f"listed above**: {detail}. Router-level dependency lists count "
+                "only when the list itself names an auth dependency, so "
+                "`dependencies=[Depends(rate_limit)]` does not suppress anything. "
+                f"Wiring module read: "
+                f"{'`' + wiring + '`' if wiring else '**none found**, pass `--app-module`'}._"
+            )
+            out.append("")
+        elif any(r["auth_gaps"] for r in rows):
+            out.append(
+                "_No handler was covered by a router-level dependency list. "
+                f"Wiring module read: "
+                f"{'`' + wiring + '`' if wiring else '**none found**, pass `--app-module` if routers are mounted with `dependencies=[...]` elsewhere'}._"
+            )
+            out.append("")
 
     out.append(f"## Full top {top} (any axis ≥ 3)")
     out.append("")
@@ -574,6 +811,14 @@ def main() -> None:
         f"with {PUBLIC_PATHS_FILENAME} at the repo root. Keep it tight, every "
         "token silently hides findings.",
     )
+    ap.add_argument(
+        "--app-module",
+        metavar="FILE",
+        help="the module that mounts the routers, relative to the repo root. "
+        "Routers included there with an auth dependency list cover every "
+        "handler in their own file. Default: the first of app/main.py, "
+        "main.py, src/main.py that exists.",
+    )
     ap.add_argument("--top", type=int, default=40)
     ap.add_argument("--md")
     ap.add_argument("--json")
@@ -583,7 +828,7 @@ def main() -> None:
     src_roots = resolve_src_roots(repo_path, args.src_root)
     public_paths = load_public_paths(repo_path, args.public_paths)
 
-    rows = score_repo(args.repo, src_roots, public_paths)
+    rows, wiring = score_repo(args.repo, src_roots, public_paths, args.app_module)
     if not rows:
         shown = ", ".join(r or "<repo root>" for r in src_roots)
         print(
@@ -591,7 +836,7 @@ def main() -> None:
             "the lens at your source directories",
             file=sys.stderr,
         )
-    md = render_md(args.repo, rows, args.top, src_roots, public_paths)
+    md = render_md(args.repo, rows, args.top, src_roots, public_paths, wiring)
     if args.md:
         Path(args.md).write_text(md, encoding="utf-8")
         print(f"wrote {args.md}")

@@ -522,6 +522,129 @@ def deadcode_skips_next_conventions_and_config_wired_files():
 
 
 # --------------------------------------------------------------------------- #
+# security: router-level auth, and exec() on TS/JS
+# --------------------------------------------------------------------------- #
+SECURITY_FIXTURE = {
+    "app/__init__.py": "",
+    "app/main.py": (
+        "from fastapi import Depends, FastAPI\n"
+        "from app.auth import get_current_user\n"
+        "from app.routes import exports, ledger, public_docs\n"
+        "from app.routes.reports import router as reports_router\n"
+        "\n"
+        "app = FastAPI()\n"
+        "app.include_router(ledger.router, prefix='/ledger',\n"
+        "                   dependencies=[Depends(get_current_user)])\n"
+        "app.include_router(reports_router, prefix=make_prefix('/reports'),\n"
+        "                   dependencies=[Depends(get_current_user)])\n"
+        "app.include_router(exports.router, prefix='/exports',\n"
+        "                   dependencies=[Depends(rate_limit)])\n"
+        "app.include_router(public_docs.router, prefix='/docs')\n"
+    ),
+    "app/auth.py": "def get_current_user():\n    return 1\n",
+    "app/routes/__init__.py": "",
+    # Protected by the include_router that mounts it.
+    "app/routes/ledger.py": (
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "\n\n@router.get('/entries')\nasync def entries():\n    return []\n"
+        "\n\n@router.post('/entries')\nasync def add_entry():\n    return {}\n"
+    ),
+    # Protected by its own APIRouter, with a call in the arg list before it.
+    "app/routes/billing.py": (
+        "from fastapi import APIRouter, Depends\n"
+        "from app.auth import get_current_user\n"
+        "router = APIRouter(prefix=build_prefix('/billing'),\n"
+        "                   dependencies=[Depends(get_current_user)])\n"
+        "\n\n@router.get('/invoices')\nasync def invoices():\n    return []\n"
+    ),
+    # Mounted with auth under an aliased import, and behind a call in the
+    # argument list: the case a `[^)]*` regex gets wrong.
+    "app/routes/reports.py": (
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "\n\n@router.get('/monthly')\nasync def monthly():\n    return []\n"
+    ),
+    # Mounted with a NON-auth dependency list: must still be reported.
+    "app/routes/exports.py": (
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "\n\n@router.get('/csv')\nasync def csv_export():\n    return []\n"
+    ),
+    # Mounted with no dependency list at all: reported.
+    "app/routes/public_docs.py": (
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "\n\n@router.get('/spec')\nasync def spec():\n    return {}\n"
+    ),
+}
+
+
+@case
+def security_router_level_auth_suppresses_but_counts():
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        repo = make_repo(tmp, SECURITY_FIXTURE)
+        md, js = tmp / "REPORT-security.md", tmp / "data-security.json"
+        run_lens("security_lens.py", str(repo), "--md", str(md), "--json", str(js))
+        rows = {r["file"]: r for r in load_json(js)}
+
+        assert not rows["app/routes/ledger.py"]["auth_gaps"], \
+            "include_router(dependencies=[auth]) not honoured"
+        assert len(rows["app/routes/ledger.py"]["auth_suppressed"]) == 2, rows
+        assert "include_router" in rows["app/routes/ledger.py"]["auth_suppressed_reason"]
+
+        assert not rows["app/routes/billing.py"]["auth_gaps"], \
+            "APIRouter(dependencies=[auth]) in the same file not honoured"
+        assert "APIRouter" in rows["app/routes/billing.py"]["auth_suppressed_reason"]
+
+        # Aliased import, and a call inside the include_router argument list.
+        assert not rows["app/routes/reports.py"]["auth_gaps"], \
+            "aliased router / nested call in the argument list broke resolution"
+
+        # A non-auth dependency list must not suppress, and neither must silence.
+        assert rows["app/routes/exports.py"]["auth_gaps"], \
+            "dependencies=[Depends(rate_limit)] wrongly treated as auth"
+        assert rows["app/routes/public_docs.py"]["auth_gaps"], rows
+
+        body = md.read_text(encoding="utf-8")
+        assert "4 further handlers in 3 files are not listed" in body, body
+        assert "app/main.py" in body, "the wiring module read is not named"
+
+
+@case
+def security_exec_on_ts_needs_child_process():
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        repo = make_repo(tmp, {
+            # RegExp.prototype.exec: the false positive.
+            "src/lib/parsePrompt.ts": (
+                "const RE = /(\\w+)/g;\n"
+                "export function parsePrompt(s: string) {\n"
+                "  let m; const out = [];\n"
+                "  while ((m = RE.exec(s)) !== null) out.push(m[1]);\n"
+                "  return out;\n"
+                "}\n"
+            ),
+            # The real thing.
+            "src/lib/runBuild.ts": (
+                'import { execSync } from "child_process";\n'
+                "export function runBuild(target: string) {\n"
+                "  return execSync(`npm run ${target}`);\n"
+                "}\n"
+            ),
+        })
+        js = tmp / "data-security.json"
+        run_lens("security_lens.py", str(repo), "--md", str(tmp / "a.md"),
+                 "--json", str(js))
+        rows = {r["file"]: r for r in load_json(js)}
+        assert "exec" not in rows["src/lib/parsePrompt.ts"]["patterns"], \
+            f"RegExp.exec flagged: {rows['src/lib/parsePrompt.ts']['patterns']}"
+        assert rows["src/lib/runBuild.ts"]["patterns"].get("child_process_exec") == 1, \
+            rows["src/lib/runBuild.ts"]["patterns"]
+
+
+# --------------------------------------------------------------------------- #
 def main() -> int:
     wanted = sys.argv[1:]
     selected = [(n, f) for n, f in CASES
