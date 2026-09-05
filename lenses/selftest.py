@@ -260,6 +260,87 @@ def drift_ts_stdout_and_md_and_json():
 
 
 # --------------------------------------------------------------------------- #
+# drift: a builder and the function it returns are not a drifted pair
+# --------------------------------------------------------------------------- #
+BUILDER_PY = '''def _build_settle(config):
+    """A factory whose inner function is what actually runs."""
+    def settle(order, rate):
+        total = 0
+        for item in order:
+            if item.taxable:
+                total += item.price * rate
+            else:
+                total += item.price
+        if total < 0:
+            total = 0
+        return round(total, 2)
+
+    return settle
+'''
+
+BUILDER_TS = """export function buildSettle(config: Config) {
+  const settle = (order: Line[], rate: number) => {
+    let total = 0;
+    for (const item of order) {
+      if (item.taxable) {
+        total += item.price * rate;
+      } else {
+        total += item.price;
+      }
+    }
+    if (total < 0) {
+      total = 0;
+    }
+    return Math.round(total * 100) / 100;
+  };
+  return settle;
+}
+"""
+
+
+@case
+def drift_py_skips_a_builder_and_its_inner_function():
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        repo = make_repo(tmp, {"pkg/settlement.py": BUILDER_PY})
+        js = tmp / "data-drift.json"
+        run_lens("drift_lens.py", str(repo), "--md", str(tmp / "a.md"), "--json", str(js))
+        names = {m["name"] for group in load_json(js) for m in group}
+        assert not names & {"_build_settle", "settle"}, \
+            f"builder/inner pair reported as drift: {names}"
+        assert "Nesting is excluded" in (tmp / "a.md").read_text(encoding="utf-8")
+
+
+@case
+def drift_ts_skips_a_factory_and_its_closure():
+    need_typescript()
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        repo = make_repo(tmp, {"src/settlement.ts": BUILDER_TS})
+        js = tmp / "data-drift-ts.json"
+        run_lens("drift_lens_ts.js", str(repo), "--md", str(tmp / "a.md"),
+                 "--json", str(js))
+        names = {m["name"] for group in load_json(js) for m in group}
+        assert not names & {"buildSettle", "settle"}, \
+            f"factory/closure pair reported as drift: {names}"
+        assert "Nesting is excluded" in (tmp / "a.md").read_text(encoding="utf-8")
+
+
+@case
+def drift_py_still_reports_two_copies_in_one_file():
+    """The nesting rule must not silence same-file copies at disjoint ranges."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        pair = _drifted_pair("py")
+        one_file = "\n\n".join(pair.values())
+        repo = make_repo(tmp, {"pkg/billing.py": one_file})
+        js = tmp / "data-drift.json"
+        run_lens("drift_lens.py", str(repo), "--md", str(tmp / "a.md"), "--json", str(js))
+        names = {m["name"] for group in load_json(js) for m in group}
+        assert {"apply_discount", "apply_rebate"} <= names, names
+
+
+# --------------------------------------------------------------------------- #
 # arch: TS/JS import resolution (tsconfig paths, index files, .tsx)
 # --------------------------------------------------------------------------- #
 NEXT_FIXTURE = {

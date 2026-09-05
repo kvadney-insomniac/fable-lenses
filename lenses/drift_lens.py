@@ -101,6 +101,7 @@ def collect_functions(repo: str) -> list[dict]:
                 continue
             funcs.append({
                 "file": rel, "name": node.name, "line": node.lineno,
+                "end": getattr(node, "end_lineno", None) or node.lineno,
                 "toks": toks, "loc": seg.count("\n") + 1,
             })
     return funcs
@@ -126,6 +127,22 @@ def candidate_pairs(funcs: list[dict]) -> set[tuple[int, int]]:
     return {p for p, n in shared.items() if n >= MIN_SHARED_SHINGLES}
 
 
+def nested(a: dict, b: dict) -> bool:
+    """True when one function's line range contains the other's.
+
+    A builder and the closure it returns are not two drifted copies of one
+    block: a `_build_handler` reported against the `handler` it defines inside
+    itself is an artifact of the outer span including the inner one, and it
+    looks exactly like a real finding in the report. Decorators, closures,
+    factory functions and nested helpers all produce it, and there is nothing
+    to reconcile because there is only one piece of code.
+    """
+    if a["file"] != b["file"]:
+        return False
+    return ((a["line"] <= b["line"] and b["end"] <= a["end"])
+            or (b["line"] <= a["line"] and a["end"] <= b["end"]))
+
+
 def find_class(parent: dict[int, int], x: int) -> int:
     while parent.get(x, x) != x:
         parent[x] = parent.get(parent[x], parent[x])
@@ -148,6 +165,8 @@ def main() -> None:
     for a, b in pairs:
         if funcs[a]["name"] == funcs[b]["name"] and funcs[a]["file"] == funcs[b]["file"]:
             continue
+        if nested(funcs[a], funcs[b]):
+            continue  # an outer function and the one it defines inside itself
         ratio = difflib.SequenceMatcher(None, funcs[a]["toks"], funcs[b]["toks"]).ratio()
         if ratio >= 1.0:
             exact.append((a, b))
@@ -179,7 +198,14 @@ def main() -> None:
            "",
            "Each group = the same normalized logic copied to N sites where the "
            "copies **diverged**. Diff the members, decide the correct behavior, "
-           "unify behind one helper + a golden master.", ""]
+           "unify behind one helper + a golden master.", "",
+           "> **Nesting is excluded.** A pair where one function's line range "
+           "contains the other's is skipped: a builder and the closure it "
+           "returns, a decorator and its wrapper, a nested helper. The outer "
+           "span includes the inner one, so they always look like near-identical "
+           "copies, and there is nothing to reconcile because there is only one "
+           "piece of code. Copies in the same file at disjoint line ranges are "
+           "still reported.", ""]
     for gi, g in enumerate(ranked[:25], 1):
         members = sorted(g, key=lambda i: funcs[i]["file"])
         root = find_class(parent, members[0])

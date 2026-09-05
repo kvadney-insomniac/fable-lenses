@@ -144,7 +144,8 @@ for (const rel of trackedFiles()) {
       const toks = normalize(text);
       if (toks.length >= MIN_TOKENS) {
         const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
-        funcs.push({ file: rel, name: fnName(node, sf), line, toks, loc: text.split("\n").length });
+        const end = sf.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
+        funcs.push({ file: rel, name: fnName(node, sf), line, end, toks, loc: text.split("\n").length });
       }
     }
     ts.forEachChild(node, visit);
@@ -169,6 +170,16 @@ for (const members of index.values()) {
       shared.set(key, (shared.get(key) || 0) + 1);
     }
 }
+// One function's line range containing the other's is not drift: it is a
+// closure inside its factory, a callback inside the hook that declares it, a
+// nested helper. The outer span includes the inner one, so the pair always
+// looks near-identical, and there is nothing to reconcile. This lens walks
+// every nested arrow function, so without the check these dominate.
+function nested(a, b) {
+  if (a.file !== b.file) return false;
+  return (a.line <= b.line && b.end <= a.end) || (b.line <= a.line && a.end <= b.end);
+}
+
 function jaccard(a, b) {
   let inter = 0;
   const small = a.size < b.size ? a : b,
@@ -182,6 +193,7 @@ for (const [key, n] of shared) {
   if (n < MIN_SHARED) continue;
   const [a, b] = key.split(":").map(Number);
   if (funcs[a].name === funcs[b].name && funcs[a].file === funcs[b].file) continue;
+  if (nested(funcs[a], funcs[b])) continue;
   const j = jaccard(shingles[a], shingles[b]);
   if (j >= 0.999) exact.push([a, b]);
   else if (j >= DRIFT_LO) flagged.push([j, a, b]);
@@ -220,6 +232,8 @@ const lines = [
   `_${funcs.length} functions scanned · **${ranked.length} drifted groups** · ${exact.length} exact clones._`,
   "",
   "Each group is the same normalized logic copied to N sites that then **diverged**. That divergence is the point: identical clones are a tidiness problem, but copies that drifted apart are where one site got a bug fix and the others silently did not. Diff the members, decide which behavior is correct, and unify behind one helper plus a test.",
+  "",
+  "> **Nesting is excluded.** A pair where one function's line range contains the other's is skipped: a closure and the factory that returns it, a callback and the hook that declares it, a nested helper. The outer span includes the inner one, so they always look like near-identical copies, and there is nothing to reconcile because there is only one piece of code. Copies in the same file at disjoint line ranges are still reported.",
   "",
 ];
 ranked.slice(0, 25).forEach((g, gi) => {
