@@ -15,15 +15,65 @@
  * so rename-only clones collapse and real logic diffs surface; shingle prefilter
  * + Jaccard similarity; flag pairs whose similarity is HIGH but < 1.0 (drift).
  *
- * Usage: node drift_lens_ts.js <source_dir> [outFile]
+ * Usage: node drift_lens_ts.js <repo_path> [--md REPORT-drift-ts.md] [--json data-drift-ts.json]
+ *
+ * Prints the report to stdout by default, like the Python lenses. --md writes
+ * it to a path instead; --json writes the drifted groups as data. A bare
+ * second positional is still read as the markdown path, the old shape.
  */
 const fs = require("fs");
 const path = require("path");
 const cp = require("child_process");
 
-const REPO = process.argv[2];
-const OUT = process.argv[3] || "REPORT-drift-ts.md";
-const ts = require(path.join(path.resolve(REPO), "node_modules", "typescript"));
+function parseArgs(argv) {
+  const opts = { repo: null, md: null, json: null };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--md") opts.md = argv[++i];
+    else if (a === "--json") opts.json = argv[++i];
+    else if (a.startsWith("--md=")) opts.md = a.slice(5);
+    else if (a.startsWith("--json=")) opts.json = a.slice(7);
+    else if (a === "-h" || a === "--help") opts.help = true;
+    else if (opts.repo === null) opts.repo = a;
+    else if (opts.md === null) opts.md = a; // legacy positional outFile
+  }
+  return opts;
+}
+
+const ARGS = parseArgs(process.argv.slice(2));
+if (ARGS.help || !ARGS.repo) {
+  console.error("usage: node drift_lens_ts.js <repo_path> [--md PATH] [--json PATH]");
+  process.exit(ARGS.help ? 0 : 2);
+}
+const REPO = ARGS.repo;
+
+// The TypeScript compiler is the one dependency. Prefer the copy inside the
+// repo being scanned (it is the version that repo actually compiles with),
+// fall back to whatever resolves for this script (a global install or
+// NODE_PATH), and say so plainly rather than dying on a raw MODULE_NOT_FOUND.
+let ts;
+for (const attempt of [() => require(path.join(path.resolve(REPO), "node_modules", "typescript")), () => require("typescript")]) {
+  try {
+    const mod = attempt();
+    // TypeScript 7 ships the native port, whose JS package exports a version
+    // string and nothing else. Keep looking rather than crashing on
+    // `ts.SyntaxKind` twenty lines later.
+    if (mod && mod.createSourceFile && mod.SyntaxKind) {
+      ts = mod;
+      break;
+    }
+  } catch {
+    /* try the next resolution */
+  }
+}
+if (!ts) {
+  console.error(
+    `[drift_lens_ts] no usable 'typescript' package (needs the 5.x JavaScript compiler API: ` +
+      `createSourceFile + SyntaxKind). Install one in ${REPO} (npm i -D typescript@5), ` +
+      "or make one resolvable to this script via NODE_PATH."
+  );
+  process.exit(3);
+}
 
 const MIN_TOKENS = 40;
 const SHINGLE_K = 5;
@@ -179,5 +229,20 @@ ranked.slice(0, 25).forEach((g, gi) => {
   members.forEach((i) => lines.push(`- \`${funcs[i].file}:${funcs[i].line}\` **${funcs[i].name}**(), ${funcs[i].loc} LOC`));
   lines.push("");
 });
-fs.writeFileSync(OUT, lines.join("\n"));
-console.log(`wrote ${OUT}, ${funcs.length} fns, ${ranked.length} drifted groups, ${exact.length} exact clones`);
+const report = lines.join("\n") + "\n";
+if (ARGS.md) {
+  fs.writeFileSync(ARGS.md, report);
+  console.log(`wrote ${ARGS.md}`);
+} else {
+  process.stdout.write(report);
+}
+if (ARGS.json) {
+  const payload = ranked.map((g) =>
+    [...g]
+      .sort((x, y) => x - y)
+      .map((i) => ({ file: funcs[i].file, name: funcs[i].name, line: funcs[i].line }))
+  );
+  fs.writeFileSync(ARGS.json, JSON.stringify(payload, null, 2));
+  console.log(`wrote ${ARGS.json}`);
+}
+console.error(`[drift_lens_ts] ${funcs.length} fns, ${ranked.length} drifted groups, ${exact.length} exact clones`);

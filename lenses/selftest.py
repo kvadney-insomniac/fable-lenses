@@ -27,9 +27,23 @@ PY = sys.executable or "python3"
 CASES: list[tuple[str, object]] = []
 
 
+class Skip(Exception):
+    """A case that cannot run here (a missing optional dependency), not a failure."""
+
+
 def case(fn):
     CASES.append((fn.__name__, fn))
     return fn
+
+
+def need_typescript() -> None:
+    """drift_lens_ts.js needs the `typescript` package resolvable from somewhere."""
+    probe = subprocess.run(
+        ["node", "-e", "const t=require('typescript'); if(!t.createSourceFile) process.exit(9)"],
+        capture_output=True, text=True)
+    if probe.returncode != 0:
+        raise Skip("no 'typescript' package with the 5.x compiler API is "
+                   "resolvable to node (npm i typescript@5, or set NODE_PATH)")
 
 
 # --------------------------------------------------------------------------- #
@@ -159,6 +173,93 @@ def coverage_gap_legacy_positional_order_still_works():
 
 
 # --------------------------------------------------------------------------- #
+# drift: both lenses print to stdout by default and honour --md / --json
+# --------------------------------------------------------------------------- #
+def _drifted_pair(lang: str) -> dict[str, str]:
+    """Two near-identical functions in different files: one grew a guard."""
+    if lang == "py":
+        a = ("def apply_discount(order, rate):\n"
+             "    total = 0\n"
+             "    for item in order:\n"
+             "        if item.taxable:\n"
+             "            total += item.price * rate\n"
+             "        else:\n"
+             "            total += item.price\n"
+             "    if total < 0:\n"
+             "        total = 0\n"
+             "    return round(total, 2)\n")
+        b = ("def apply_rebate(basket, factor):\n"
+             "    amount = 0\n"
+             "    for line in basket:\n"
+             "        if line.taxable:\n"
+             "            amount += line.price * factor\n"
+             "        else:\n"
+             "            amount += line.price\n"
+             "    return round(amount, 2)\n")
+        return {"pkg/billing/discount.py": a, "pkg/billing/rebate.py": b}
+    a = ("export function applyDiscount(order: Line[], rate: number) {\n"
+         "  let total = 0;\n"
+         "  for (const item of order) {\n"
+         "    if (item.taxable) {\n"
+         "      total += item.price * rate;\n"
+         "    } else {\n"
+         "      total += item.price;\n"
+         "    }\n"
+         "  }\n"
+         "  if (total < 0) {\n"
+         "    total = 0;\n"
+         "  }\n"
+         "  return Math.round(total * 100) / 100;\n"
+         "}\n")
+    b = ("export function applyRebate(basket: Line[], factor: number) {\n"
+         "  let amount = 0;\n"
+         "  for (const line of basket) {\n"
+         "    if (line.taxable) {\n"
+         "      amount += line.price * factor;\n"
+         "    } else {\n"
+         "      amount += line.price;\n"
+         "    }\n"
+         "  }\n"
+         "  return Math.round(amount * 100) / 100;\n"
+         "}\n")
+    return {"src/billing/discount.ts": a, "src/billing/rebate.ts": b}
+
+
+@case
+def drift_py_stdout_and_md_and_json():
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        repo = make_repo(tmp, _drifted_pair("py"))
+        proc = run_lens("drift_lens.py", str(repo))
+        assert "Drift lens" in proc.stdout, proc.stdout[:400]
+        md, js = tmp / "REPORT-drift.md", tmp / "data-drift.json"
+        proc = run_lens("drift_lens.py", str(repo), "--md", str(md), "--json", str(js))
+        assert md.is_file() and js.is_file()
+        assert "Drift lens" not in proc.stdout, "report leaked to stdout despite --md"
+        assert f"wrote {md}" in proc.stdout
+        assert isinstance(load_json(js), list)
+
+
+@case
+def drift_ts_stdout_and_md_and_json():
+    need_typescript()
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        repo = make_repo(tmp, _drifted_pair("ts"))
+        cwd_before = set(Path.cwd().iterdir())
+        proc = run_lens("drift_lens_ts.js", str(repo))
+        assert "Drift lens (TypeScript)" in proc.stdout, proc.stdout[:400]
+        assert set(Path.cwd().iterdir()) == cwd_before, \
+            "the lens wrote into the current directory with no --md"
+        md, js = tmp / "REPORT-drift-ts.md", tmp / "data-drift-ts.json"
+        proc = run_lens("drift_lens_ts.js", str(repo), "--md", str(md), "--json", str(js))
+        assert md.is_file() and js.is_file()
+        assert "Drift lens (TypeScript)" not in proc.stdout, \
+            "report leaked to stdout despite --md"
+        assert isinstance(load_json(js), list)
+
+
+# --------------------------------------------------------------------------- #
 def main() -> int:
     wanted = sys.argv[1:]
     selected = [(n, f) for n, f in CASES
@@ -166,17 +267,21 @@ def main() -> int:
     if not selected:
         print(f"no case matches {wanted}", file=sys.stderr)
         return 2
-    failures = 0
+    failures = skipped = 0
     for name, fn in selected:
         try:
             fn()
+        except Skip as why:
+            skipped += 1
+            print(f"skip {name}: {why}")
         except Exception:
             failures += 1
             print(f"FAIL {name}")
             traceback.print_exc()
         else:
             print(f"ok   {name}")
-    print(f"\n{len(selected) - failures}/{len(selected)} passed")
+    tail = f", {skipped} skipped" if skipped else ""
+    print(f"\n{len(selected) - failures - skipped}/{len(selected)} passed{tail}")
     return 1 if failures else 0
 
 

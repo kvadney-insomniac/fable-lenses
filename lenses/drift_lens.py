@@ -27,7 +27,9 @@ A drifted group is the highest-value finding: same code that MUST stay in sync
 but didn't. Each is a verify-then-fix candidate (diff the members, decide which
 behavior is correct, unify behind one helper + a golden master).
 
-Usage: python3 drift_lens.py <repo_dir> [--md REPORT-drift.md]
+Usage: python3 drift_lens.py <repo_dir> [--md REPORT-drift.md] [--json data-drift.json]
+
+Prints the report to stdout by default; --md writes it to a path instead.
 """
 from __future__ import annotations
 
@@ -38,6 +40,7 @@ import io
 import json
 import keyword
 import subprocess
+import sys
 import tokenize
 from collections import defaultdict
 from pathlib import Path
@@ -186,18 +189,21 @@ def main() -> None:
             out.append(f"- `{funcs[i]['file']}:{funcs[i]['line']}` "
                        f"**{funcs[i]['name']}**(), {funcs[i]['loc']} LOC")
         out.append("")
-    md = "\n".join(out)
+    md = "\n".join(out) + "\n"
 
     if args.md:
         Path(args.md).write_text(md, encoding="utf-8")
-        print(f"wrote {args.md}, {len(ranked)} drifted groups, {len(exact)} exact clones")
+        print(f"wrote {args.md}")
     else:
-        print(md)
+        print(md, end="")
     if args.json:
         Path(args.json).write_text(json.dumps(
             [[{"file": funcs[i]["file"], "name": funcs[i]["name"],
                "line": funcs[i]["line"]} for i in sorted(g)] for g in ranked],
             indent=2), encoding="utf-8")
+        print(f"wrote {args.json}")
+    print(f"[drift_lens] {len(funcs)} functions, {len(ranked)} drifted groups, "
+          f"{len(exact)} exact clones", file=sys.stderr)
 
 
 if __name__ == "__main__":
