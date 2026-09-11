@@ -27,20 +27,56 @@ import argparse
 import json
 import subprocess
 import sys
+import re
 from pathlib import Path
 
 from score_targets import score_repo
 
 
-def load_tests(repo: str, tests_dir: str) -> list[str]:
-    """Contents of every tracked test file, read once.
+# Conventional test-file names, for repos that keep tests beside the code
+# rather than in one directory. Covers pytest (`test_x.py`, `x_test.py`),
+# vitest/jest (`x.test.ts`, `x.spec.tsx`), and Go (`x_test.go`).
+_TEST_FILENAME = re.compile(
+    r"(^|/)(test_[^/]+\.py|[^/]+_test\.(py|go)|[^/]+\.(test|spec)\.[jt]sx?)$")
+
+
+def _tracked(repo: str, *args: str) -> list[str]:
+    return subprocess.run(
+        ["git", "-C", repo, "ls-files", *args],
+        capture_output=True, text=True).stdout.splitlines()
+
+
+def find_tests(repo: str, tests_dir: str) -> tuple[list[str], str]:
+    """Tracked test files, and a label saying how they were found.
+
+    Looks in `tests_dir` first, because a repo that has one usually means it.
+    When that comes back empty, fall back to matching conventional test
+    filenames anywhere in the tree.
+
+    The fallback exists because the directory default is wrong for a whole
+    class of repo. Most JS and TS projects co-locate (`Foo.tsx` beside
+    `Foo.test.tsx`), so the lens found zero tests, every gap collapsed to the
+    raw churn number, and every row read "0 test file(s) mention it". The
+    report did say `0 test files read from 'tests/'`, but run_all's index does
+    not carry that line, so the ranking looked authoritative when its
+    denominator was empty for every file. Silent-zero, in other words: the
+    input was missing and the output still looked like an answer.
+    """
+    names = _tracked(repo, tests_dir)
+    if names:
+        return names, f"`{tests_dir}`"
+    names = [f for f in _tracked(repo) if _TEST_FILENAME.search(f)]
+    if names:
+        return names, "co-located test files (no `%s` in this repo)" % tests_dir
+    return [], f"`{tests_dir}` (none found)"
+
+
+def read_tests(repo: str, names: list[str]) -> list[str]:
+    """Contents of every test file, read once.
 
     The ranking asks "which tests mention this module?" for every candidate, so
     reading the test suite per candidate would be quadratic for no reason.
     """
-    names = subprocess.run(
-        ["git", "-C", repo, "ls-files", tests_dir],
-        capture_output=True, text=True).stdout.splitlines()
     bodies = []
     for tf in names:
         try:
@@ -95,7 +131,7 @@ def render_md(repo: str, rows: list[dict], top: int, tests_dir: str,
         f"# Fable-target, COVERAGE-GAP lens, `{repo}`",
         "",
         f"_{len(rows)} high-churn files ranked (churn bucket >= {min_impact}) · "
-        f"{n_tests} test files read from `{tests_dir}` · scores from {source}._",
+        f"{n_tests} test files read from {tests_dir} · scores from {source}._",
         "",
         "`gap = churn / (1 + test files that mention this module)`. A big gap is "
         "a much-edited file that almost nothing tests: write the golden master "
@@ -158,14 +194,16 @@ def main() -> None:
         rows = score_repo(repo, args.since)
         source = f"an in-process score_targets pass, since {args.since}"
 
-    tests = load_tests(repo, args.tests_dir)
+    test_names, tests_label = find_tests(repo, args.tests_dir)
+    tests = read_tests(repo, test_names)
     ranked = rank(rows, tests, args.include, args.min_impact)
     if not tests:
-        print(f"[coverage_gap] no test files under {args.tests_dir!r}; every gap "
-              "is the raw churn number. Pass --tests-dir to point at your suite.",
+        print(f"[coverage_gap] no test files under {args.tests_dir!r} and none "
+              "matching the conventional test-file names either; every gap is "
+              "the raw churn number. Pass --tests-dir to point at your suite.",
               file=sys.stderr)
 
-    md = render_md(repo, ranked, args.top, args.tests_dir, len(tests),
+    md = render_md(repo, ranked, args.top, tests_label, len(tests),
                    args.min_impact, source)
     if args.md:
         Path(args.md).write_text(md, encoding="utf-8")
