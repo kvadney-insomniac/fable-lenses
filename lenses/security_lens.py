@@ -116,6 +116,27 @@ DEFAULT_PUBLIC_PATHS = (
 # Optional per-repo config, read from the root of the repo being scanned.
 PUBLIC_PATHS_FILENAME = ".fable-public-paths"
 
+# Dependency names that mean "this handler is authenticated". The first three
+# are near-universal FastAPI conventions; the rest are the shapes real apps
+# reach for once they have organisations and roles, and were added after a
+# scan of one production codebase reported 40+ authenticated handlers as
+# unauthenticated because it only knew `get_current_*` and `require_*`.
+#
+# Over-listing here deletes real findings, so every entry has to read
+# unambiguously as authentication or authorisation, not as "touches the user".
+# `get_user_settings` would be the wrong kind of name to add.
+DEFAULT_AUTH_DEPS = (
+    "get_current_user",
+    "get_current",          # get_current_admin_user, get_current_superuser, ...
+    "require_",             # require_role, require_invite_capability, ...
+    "get_verified_user",
+    "get_org_context",
+    "authenticated",
+    "auth_required",
+    "login_required",
+)
+AUTH_DEPS_FILENAME = ".fable-auth-deps"
+
 
 def _normalise_tokens(raw) -> list[str]:
     """Split on commas, strip `#` comments and whitespace, lowercase, drop empties.
@@ -218,7 +239,118 @@ _RISK = [
 
 # Generic FastAPI/Flask/Starlette routing idiom: `@router.get("/x")`, `@app.post("/x")`.
 _ROUTE_DECORATOR = re.compile(r"@\w+\.(get|post|put|patch|delete)\s*\(\s*['\"]([^'\"]+)", re.I)
-_AUTH_DEP = re.compile(r"get_current_user|require_|Depends\(\s*(?:get_current|require)")
+def build_auth_re(names: tuple[str, ...]) -> re.Pattern[str]:
+    """A regex matching any of `names` as a dependency reference.
+
+    Matched anywhere in the signature span rather than only inside
+    `Depends(...)`: a project that wraps its dependency in an annotated alias
+    (`CurrentUser = Annotated[User, Depends(get_current_user)]`) still names
+    it, and missing that shape would report an authenticated handler as open.
+    """
+    return re.compile(
+        "|".join(rf"\b{re.escape(n)}" for n in names if n), re.I)
+
+
+# The defaults, for callers that have no repo config to read (the self-test,
+# and any direct import of `score_file`).
+_AUTH_DEP = build_auth_re(DEFAULT_AUTH_DEPS)
+
+
+def _regex_source_names(pattern: re.Pattern[str]) -> tuple[str, ...]:
+    """The alternation `build_auth_re` compiled, back as plain names."""
+    names = []
+    for part in pattern.pattern.split("|"):
+        if part.startswith(r"\b"):
+            part = part[2:]          # the word-boundary anchor build_auth_re adds
+        names.append(re.sub(r"\\(.)", r"\1", part))
+    return tuple(n for n in names if n)
+
+
+def expand_auth_deps(
+    repo_path: Path, tracked: list[str], seed: tuple[str, ...], rounds: int = 4,
+) -> tuple[str, ...]:
+    """Grow the auth vocabulary by following dependencies that wrap other ones.
+
+    Auth helpers compose, and a fixed name list cannot keep up with that. A
+    real app has `get_current_user`, then `get_org_context` built on it, then
+    `get_historical_org_context` built on *that*, and a handler three links
+    down looks unauthenticated to a grep even though every request through it
+    is authenticated.
+
+    So: find every `def NAME(...)` in the repo whose own signature names
+    something already known to be auth, add NAME, and repeat until the set
+    stops growing. Four rounds is well past the depth any real chain reaches
+    and stops a pathological repo from spinning.
+
+    This can over-suppress if a helper takes an authenticated user purely to
+    read a preference and is then used on a deliberately public route. That
+    trade is deliberate: on the codebase this was written against the name
+    list alone reported 50 handlers, 40 of which were authenticated through
+    exactly this kind of chain, and a table that is 80% wrong does not get
+    read at all. Under-reporting a rare shape beats burying every real
+    finding.
+    """
+    # Read every Python file once, and note which names the repo actually
+    # injects as dependencies. A function only earns a place in the auth
+    # vocabulary if something `Depends(...)` on it: that is what separates a
+    # reusable auth helper from a route handler, which also has auth in its
+    # signature but is never itself a dependency. Without this gate every
+    # authenticated handler joins the vocabulary and the check suppresses
+    # itself into silence (measured: 8 seed names expanded to 1162, and the
+    # finding count went to zero on a codebase with real public routes).
+    sources: dict[str, list[str]] = {}
+    injected: set[str] = set()
+    for rel in tracked:
+        if Path(rel).suffix not in PY_EXT:
+            continue
+        try:
+            text = (repo_path / rel).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        sources[rel] = text.splitlines()
+        injected.update(re.findall(r"Depends\(\s*([A-Za-z_]\w*)", text))
+
+    known = list(seed)
+    pattern = build_auth_re(tuple(known))
+    for _ in range(rounds):
+        added: list[str] = []
+        for lines in sources.values():
+            for i, ln in enumerate(lines):
+                m = re.match(r"\s*(?:async\s+)?def\s+(\w+)\s*\(", ln)
+                if not m:
+                    continue
+                name = m.group(1)
+                # Too short to be distinctive, and a short name anchored at a
+                # word boundary still matches far more than it should.
+                if len(name) < 6 or name not in injected or pattern.search(name):
+                    continue
+                if pattern.search(signature_span(lines, i)):
+                    added.append(name)
+        new_names = [n for n in dict.fromkeys(added) if n not in known]
+        if not new_names:
+            break
+        known += new_names
+        pattern = build_auth_re(tuple(known))
+    return tuple(known)
+
+
+def load_auth_deps(repo_path: Path, cli_values: list[str] | None) -> tuple[str, ...]:
+    """Union of the built-in auth vocabulary, `.fable-auth-deps`, and --auth-deps.
+
+    Union rather than override, for the same reason as the public paths: the
+    defaults are universal conventions, and letting one flag drop them would
+    turn every authenticated handler in the repo into a finding.
+    """
+    tokens = _normalise_tokens(DEFAULT_AUTH_DEPS)
+    cfg = repo_path / AUTH_DEPS_FILENAME
+    if cfg.is_file():
+        try:
+            tokens += _normalise_tokens(
+                cfg.read_text(encoding="utf-8", errors="ignore").splitlines())
+        except OSError:
+            pass
+    tokens += _normalise_tokens(cli_values or [])
+    return tuple(dict.fromkeys(tokens))
 
 # `exec(` on TS/JS is almost always `SOME_REGEX.exec(str)`, which is not code
 # execution at all. Node's real one comes from child_process, so the import is
@@ -268,7 +400,7 @@ def call_arguments(src: str, callee: str, limit: int = 40000):
                     break
 
 
-def _auth_dependency_list(args: str) -> bool:
+def _auth_dependency_list(args: str, auth_re: re.Pattern[str] = _AUTH_DEP) -> bool:
     """A ``dependencies=[...]`` argument that actually carries an auth dependency.
 
     `dependencies=[Depends(rate_limit)]` is not auth, and treating it as auth
@@ -285,17 +417,48 @@ def _auth_dependency_list(args: str) -> bool:
         elif args[j] == "]":
             depth -= 1
             if depth == 0:
-                return bool(_AUTH_DEP.search(args[start:j + 1]))
-    return bool(_AUTH_DEP.search(args[start:]))
+                return bool(auth_re.search(args[start:j + 1]))
+    return bool(auth_re.search(args[start:]))
 
 
-def router_level_auth(src: str) -> bool:
+def signature_span(lines: list[str], decorator_index: int) -> str:
+    """Decorator lines plus the handler's whole signature, parens balanced.
+
+    This replaced a fixed 12-line window, which silently produced false
+    `route_no_auth_dep` findings on any handler whose signature ran longer
+    than that before naming its auth dependency. FastAPI handlers reach that
+    length routinely: one `Query(..., description="...")` default spread over
+    four lines is enough, and the auth `Depends(...)` conventionally sits
+    last, so the longer the signature the more likely the check was wrong.
+    Measured on one real FastAPI app, the window dropped an auth dependency
+    on a route whose signature was 19 lines, and reported an admin-only
+    pipeline trigger as unauthenticated.
+
+    Reads from the decorator to the `)` that closes the `def`'s parameter
+    list, so signature length stops mattering. Falls back to a generous
+    window if no `def` follows (a decorator on something that is not a
+    function), which keeps failing toward over-reporting.
+    """
+    for j in range(decorator_index, min(len(lines), decorator_index + 40)):
+        m = re.match(r"\s*(?:async\s+)?def\s+\w+\s*\(", lines[j])
+        if not m:
+            continue
+        depth = 0
+        for k in range(j, min(len(lines), j + 200)):
+            depth += lines[k].count("(") - lines[k].count(")")
+            if depth <= 0 and k > j - 1:
+                return "\n".join(lines[decorator_index : k + 1])
+        return "\n".join(lines[decorator_index : j + 200])
+    return "\n".join(lines[decorator_index : decorator_index + 12])
+
+
+def router_level_auth(src: str, auth_re: re.Pattern[str] = _AUTH_DEP) -> bool:
     """Does this file build its own ``APIRouter(dependencies=[auth])``?
 
     FastAPI applies those to every route on the router, so the handlers below
     are protected even though not one of them names a dependency.
     """
-    return any(_auth_dependency_list(args) for args in call_arguments(src, "APIRouter"))
+    return any(_auth_dependency_list(args, auth_re) for args in call_arguments(src, "APIRouter"))
 
 
 # A wiring module's imports, both shapes. The parenthesized one spans lines and
@@ -349,7 +512,8 @@ def find_app_module(repo_path: Path, requested: str | None,
 
 
 def include_router_auth(repo_path: Path, app_module: str | None,
-                        tracked: list[str]) -> dict[str, str]:
+                        tracked: list[str],
+                        auth_re: re.Pattern[str] = _AUTH_DEP) -> dict[str, str]:
     """{route file: reason} for routers mounted with an auth dependency list.
 
     ``app.include_router(chat.router, dependencies=[Depends(get_current_user)])``
@@ -367,7 +531,7 @@ def include_router_auth(repo_path: Path, app_module: str | None,
     files = set(tracked)
     protected: dict[str, str] = {}
     for args in call_arguments(src, "include_router"):
-        if not _auth_dependency_list(args):
+        if not _auth_dependency_list(args, auth_re):
             continue
         first = args.split(",", 1)[0].strip()
         m = re.match(r"([\w\.]+)", first)
@@ -415,6 +579,7 @@ _PY_ONLY_PATTERNS = {
 
 def vuln_signals(
     src: str, is_py: bool, file_rel: str, public_paths: tuple[str, ...],
+    auth_re: re.Pattern[str] = _AUTH_DEP,
     router_auth: str | None = None,
 ) -> tuple[float, dict, list, list, str | None]:
     """Return (score, per-pattern counts, auth gaps, suppressed gaps, reason).
@@ -441,8 +606,8 @@ def vuln_signals(
             counts["child_process_exec"] = n
             score += n * 5
 
-    # Route handlers missing an explicit auth dependency. We inspect the ~12 lines
-    # following each route decorator (decorator + signature window).
+    # Route handlers missing an explicit auth dependency. We inspect the
+    # decorator plus the handler's full signature (see `signature_span`).
     #
     # The gate is the decorator regex itself, not the directory the file lives in:
     # every project lays its handlers out differently (routes/, routers/, api/,
@@ -455,7 +620,7 @@ def vuln_signals(
     suppressed: list[str] = []
     reason = router_auth
     if is_py:
-        if reason is None and router_level_auth(body):
+        if reason is None and router_level_auth(body, auth_re):
             reason = "APIRouter(dependencies=[...]) in this file"
         lines = body.splitlines()
         for i, ln in enumerate(lines):
@@ -465,8 +630,8 @@ def vuln_signals(
             full_path = decorated_route_path(file_rel, m.group(2))
             if any(p in full_path.lower() for p in public_paths):
                 continue
-            window = "\n".join(lines[i : i + 12])
-            if not _AUTH_DEP.search(window):
+            window = signature_span(lines, i)
+            if not auth_re.search(window):
                 (suppressed if reason else auth_gaps).append(
                     f"{m.group(1).upper()} {m.group(2)}")
         if auth_gaps:
@@ -585,6 +750,7 @@ def role_bonus(file_rel: str, src: str) -> tuple[int, list[str]]:
 def score_repo(
     repo: str, src_roots: tuple[str, ...], public_paths: tuple[str, ...],
     app_module: str | None = None,
+    auth_re: re.Pattern[str] = _AUTH_DEP,
 ) -> tuple[list[dict], str | None]:
     repo_path = Path(repo)
 
@@ -599,7 +765,10 @@ def score_repo(
     # The wiring module is read once; every router it mounts with an auth
     # dependency list covers the handlers in that router's own file.
     wiring = find_app_module(repo_path, app_module, src_roots)
-    mounted_auth = include_router_auth(repo_path, wiring, tracked)
+    # Follow composed auth helpers before scoring anything (see expand_auth_deps).
+    auth_re = build_auth_re(
+        expand_auth_deps(repo_path, tracked, _regex_source_names(auth_re)))
+    mounted_auth = include_router_auth(repo_path, wiring, tracked, auth_re)
 
     rows: list[dict] = []
     for f in tracked:
@@ -609,7 +778,7 @@ def score_repo(
             continue
         is_py = f.endswith(".py")
         vuln, counts, auth_gaps, suppressed, reason = vuln_signals(
-            src, is_py, f, public_paths, mounted_auth.get(f))
+            src, is_py, f, public_paths, auth_re, mounted_auth.get(f))
         rbonus, roles = role_bonus(f, src)
         nimp = imported_by.get(f, 0)
         rows.append(
@@ -803,6 +972,16 @@ def main() -> None:
         "whole repo.",
     )
     ap.add_argument(
+        "--auth-deps",
+        action="append",
+        default=None,
+        metavar="NAME[,NAME...]",
+        help="Extra dependency names that mean a handler is authenticated "
+             "(repeatable, or comma separated). Unioned with the built-in "
+             "vocabulary and any .fable-auth-deps file at the repo root. Add "
+             "your project's own helper, e.g. --auth-deps get_org_context.",
+    )
+    ap.add_argument(
         "--public-paths",
         action="append",
         metavar="TOKEN",
@@ -827,8 +1006,10 @@ def main() -> None:
     repo_path = Path(args.repo)
     src_roots = resolve_src_roots(repo_path, args.src_root)
     public_paths = load_public_paths(repo_path, args.public_paths)
+    auth_re = build_auth_re(load_auth_deps(repo_path, args.auth_deps))
 
-    rows, wiring = score_repo(args.repo, src_roots, public_paths, args.app_module)
+    rows, wiring = score_repo(
+        args.repo, src_roots, public_paths, args.app_module, auth_re)
     if not rows:
         shown = ", ".join(r or "<repo root>" for r in src_roots)
         print(
