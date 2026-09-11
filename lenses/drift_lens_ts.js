@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* Drift lens (TypeScript), find copy-pasted code that DIVERGED.
+/* Drift lens (TypeScript/JavaScript), find copy-pasted code that DIVERGED.
  *
  * The TypeScript sibling of drift_lens.py, which could only read .py. The bug
  * class both exist to catch: one copy of a hand-written mapper or buffer-parser
@@ -7,7 +7,8 @@
  * itself across the codebase. Nothing fails, the copies just answer
  * differently, and only under the inputs the fix was about.
  *
- * This scans .ts/.tsx with the real TypeScript compiler rather than a regex,
+ * This scans .ts/.tsx/.js/.jsx/.mjs/.cjs with the real TypeScript compiler
+ * rather than a regex,
  * so it sees functions the Python lens structurally cannot.
  *
  * Method (mirrors the Python lens): extract every function via the TS AST,
@@ -15,26 +16,87 @@
  * so rename-only clones collapse and real logic diffs surface; shingle prefilter
  * + Jaccard similarity; flag pairs whose similarity is HIGH but < 1.0 (drift).
  *
- * Usage: node drift_lens_ts.js <source_dir> [outFile]
+ * Usage: node drift_lens_ts.js <repo_path> [--md REPORT-drift-ts.md] [--json data-drift-ts.json]
+ *
+ * Prints the report to stdout by default, like the Python lenses. --md writes
+ * it to a path instead; --json writes the drifted groups as data. A bare
+ * second positional is still read as the markdown path, the old shape.
  */
 const fs = require("fs");
 const path = require("path");
 const cp = require("child_process");
 
-const REPO = process.argv[2];
-const OUT = process.argv[3] || "REPORT-drift-ts.md";
-const ts = require(path.join(path.resolve(REPO), "node_modules", "typescript"));
+function parseArgs(argv) {
+  const opts = { repo: null, md: null, json: null };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--md") opts.md = argv[++i];
+    else if (a === "--json") opts.json = argv[++i];
+    else if (a.startsWith("--md=")) opts.md = a.slice(5);
+    else if (a.startsWith("--json=")) opts.json = a.slice(7);
+    else if (a === "-h" || a === "--help") opts.help = true;
+    else if (opts.repo === null) opts.repo = a;
+    else if (opts.md === null) opts.md = a; // legacy positional outFile
+  }
+  return opts;
+}
+
+const ARGS = parseArgs(process.argv.slice(2));
+if (ARGS.help || !ARGS.repo) {
+  console.error("usage: node drift_lens_ts.js <repo_path> [--md PATH] [--json PATH]");
+  process.exit(ARGS.help ? 0 : 2);
+}
+const REPO = ARGS.repo;
+
+// The TypeScript compiler is the one dependency. Prefer the copy inside the
+// repo being scanned (it is the version that repo actually compiles with),
+// fall back to whatever resolves for this script (a global install or
+// NODE_PATH), and say so plainly rather than dying on a raw MODULE_NOT_FOUND.
+let ts;
+for (const attempt of [() => require(path.join(path.resolve(REPO), "node_modules", "typescript")), () => require("typescript")]) {
+  try {
+    const mod = attempt();
+    // TypeScript 7 ships the native port, whose JS package exports a version
+    // string and nothing else. Keep looking rather than crashing on
+    // `ts.SyntaxKind` twenty lines later.
+    if (mod && mod.createSourceFile && mod.SyntaxKind) {
+      ts = mod;
+      break;
+    }
+  } catch {
+    /* try the next resolution */
+  }
+}
+if (!ts) {
+  console.error(
+    `[drift_lens_ts] no usable 'typescript' package (needs the 5.x JavaScript compiler API: ` +
+      `createSourceFile + SyntaxKind). Install one in ${REPO} (npm i -D typescript@5), ` +
+      "or make one resolvable to this script via NODE_PATH."
+  );
+  process.exit(3);
+}
 
 const MIN_TOKENS = 40;
 const SHINGLE_K = 5;
 const MAX_FANOUT = 25; // ignore boilerplate shingles shared by > this many fns
 const MIN_SHARED = 8;
 const DRIFT_LO = 0.8;
-const DENY = [".test.", ".spec.", "/__tests__/", ".d.ts", "/__mocks__/", ".stories.", "/node_modules/"];
+const DENY = [".test.", ".spec.", "/__tests__/", ".d.ts", "/__mocks__/", ".stories.", "/node_modules/", "/dist/", "/build/", "/.next/", "/coverage/", ".min."];
+const EXTS = ["*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs"];
 
 function trackedFiles() {
-  const out = cp.execSync(`git -C ${REPO} ls-files '*.ts' '*.tsx'`, { encoding: "utf8", maxBuffer: 1 << 26 });
+  // The compiler parses JavaScript as happily as TypeScript, and a repo's
+  // hand-written .js is exactly as prone to a clone drifting as its .ts.
+  const out = cp.execSync(`git -C ${REPO} ls-files ${EXTS.map((e) => `'${e}'`).join(" ")}`, { encoding: "utf8", maxBuffer: 1 << 26 });
   return out.split("\n").filter((f) => f && !DENY.some((d) => f.includes(d)));
+}
+
+function scriptKind(rel) {
+  const ext = path.extname(rel);
+  if (ext === ".tsx") return ts.ScriptKind.TSX;
+  if (ext === ".jsx") return ts.ScriptKind.JSX;
+  if (ext === ".js" || ext === ".mjs" || ext === ".cjs") return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
 }
 
 // Normalize one function's source text to a token stream.
@@ -84,7 +146,7 @@ for (const rel of trackedFiles()) {
   }
   let sf;
   try {
-    sf = ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, rel.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+    sf = ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, scriptKind(rel));
   } catch {
     continue;
   }
@@ -94,7 +156,8 @@ for (const rel of trackedFiles()) {
       const toks = normalize(text);
       if (toks.length >= MIN_TOKENS) {
         const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
-        funcs.push({ file: rel, name: fnName(node, sf), line, toks, loc: text.split("\n").length });
+        const end = sf.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
+        funcs.push({ file: rel, name: fnName(node, sf), line, end, toks, loc: text.split("\n").length });
       }
     }
     ts.forEachChild(node, visit);
@@ -119,6 +182,16 @@ for (const members of index.values()) {
       shared.set(key, (shared.get(key) || 0) + 1);
     }
 }
+// One function's line range containing the other's is not drift: it is a
+// closure inside its factory, a callback inside the hook that declares it, a
+// nested helper. The outer span includes the inner one, so the pair always
+// looks near-identical, and there is nothing to reconcile. This lens walks
+// every nested arrow function, so without the check these dominate.
+function nested(a, b) {
+  if (a.file !== b.file) return false;
+  return (a.line <= b.line && b.end <= a.end) || (b.line <= a.line && a.end <= b.end);
+}
+
 function jaccard(a, b) {
   let inter = 0;
   const small = a.size < b.size ? a : b,
@@ -132,6 +205,7 @@ for (const [key, n] of shared) {
   if (n < MIN_SHARED) continue;
   const [a, b] = key.split(":").map(Number);
   if (funcs[a].name === funcs[b].name && funcs[a].file === funcs[b].file) continue;
+  if (nested(funcs[a], funcs[b])) continue;
   const j = jaccard(shingles[a], shingles[b]);
   if (j >= 0.999) exact.push([a, b]);
   else if (j >= DRIFT_LO) flagged.push([j, a, b]);
@@ -165,11 +239,13 @@ const ranked = [...groups.values()].sort((g1, g2) => {
 });
 
 const lines = [
-  `# Drift lens (TypeScript), \`${REPO}\``,
+  `# Drift lens (TypeScript/JavaScript), \`${REPO}\``,
   "",
   `_${funcs.length} functions scanned · **${ranked.length} drifted groups** · ${exact.length} exact clones._`,
   "",
   "Each group is the same normalized logic copied to N sites that then **diverged**. That divergence is the point: identical clones are a tidiness problem, but copies that drifted apart are where one site got a bug fix and the others silently did not. Diff the members, decide which behavior is correct, and unify behind one helper plus a test.",
+  "",
+  "> **Nesting is excluded.** A pair where one function's line range contains the other's is skipped: a closure and the factory that returns it, a callback and the hook that declares it, a nested helper. The outer span includes the inner one, so they always look like near-identical copies, and there is nothing to reconcile because there is only one piece of code. Copies in the same file at disjoint line ranges are still reported.",
   "",
 ];
 ranked.slice(0, 25).forEach((g, gi) => {
@@ -179,5 +255,20 @@ ranked.slice(0, 25).forEach((g, gi) => {
   members.forEach((i) => lines.push(`- \`${funcs[i].file}:${funcs[i].line}\` **${funcs[i].name}**(), ${funcs[i].loc} LOC`));
   lines.push("");
 });
-fs.writeFileSync(OUT, lines.join("\n"));
-console.log(`wrote ${OUT}, ${funcs.length} fns, ${ranked.length} drifted groups, ${exact.length} exact clones`);
+const report = lines.join("\n") + "\n";
+if (ARGS.md) {
+  fs.writeFileSync(ARGS.md, report);
+  console.log(`wrote ${ARGS.md}`);
+} else {
+  process.stdout.write(report);
+}
+if (ARGS.json) {
+  const payload = ranked.map((g) =>
+    [...g]
+      .sort((x, y) => x - y)
+      .map((i) => ({ file: funcs[i].file, name: funcs[i].name, line: funcs[i].line }))
+  );
+  fs.writeFileSync(ARGS.json, JSON.stringify(payload, null, 2));
+  console.log(`wrote ${ARGS.json}`);
+}
+console.error(`[drift_lens_ts] ${funcs.length} fns, ${ranked.length} drifted groups, ${exact.length} exact clones`);

@@ -23,8 +23,14 @@ False POSITIVES (look dead, are not), dynamic dispatch hides the reference:
   - Functions wired into a registry rather than called, an LLM tool decorated
     with `@tool` and listed in a tools array, a plugin registered by entry point
   - Pydantic / SQLAlchemy models (instantiated reflectively / by name)
-  - Next.js file-routing entrypoints, `page.tsx` / `layout.tsx` / `route.ts`
-    are referenced by *nothing* in code; the framework mounts them by path.
+  - Next.js convention files, the app-router set (`page` / `layout` / `route` /
+    `template` / `default` / `loading` / `error` / `global-error` /
+    `not-found` / `opengraph-image` / `twitter-image` / `icon` / `apple-icon` /
+    `sitemap` / `robots` / `manifest`) plus `instrumentation`,
+    `instrumentation-client`, `middleware` and `proxy`. Nothing imports any of
+    them; the framework loads them by path.
+  - Files wired in by `next.config.*`, `sentry.*.config.*` or a `package.json`
+    script rather than by an import.
   - Scheduler jobs, CLI entrypoints, `__all__` exports.
 These classes are auto-tagged in the report so they can be discounted.
 
@@ -69,10 +75,32 @@ SRC_ROOT_CANDIDATES = ("src", "app", "lib")
 # Files the framework mounts by path / name, not by import, never "dead".
 ENTRYPOINT_BASENAMES = {
     "main.py", "__init__.py", "conftest.py", "scheduler.py", "config.py",
-    "page.tsx", "layout.tsx", "route.ts", "loading.tsx", "error.tsx",
-    "not-found.tsx", "template.tsx", "middleware.ts", "next.config.js",
-    "page.jsx", "layout.jsx",
 }
+
+# Next.js conventions, which are file NAMES with meaning. Nothing in the repo
+# imports them: the framework loads them by path, so a reference grep reports
+# every one of them dead. These live anywhere the project keeps its source
+# (`instrumentation-client.ts` sits at the `src/` root, not the repo root).
+NEXT_ROOT_CONVENTIONS = {
+    "instrumentation", "instrumentation-client", "middleware", "proxy",
+}
+# These only mean anything inside the app router, so they are matched only when
+# an `app/` segment is on the path. A `components/error.tsx` is an ordinary
+# component and must stay a candidate.
+NEXT_APP_CONVENTIONS = {
+    "page", "layout", "route", "template", "default", "loading", "error",
+    "global-error", "not-found", "opengraph-image", "twitter-image", "icon",
+    "apple-icon", "sitemap", "robots", "manifest",
+}
+
+# Files whose contents wire the build together. Anything they name by path is
+# an entrypoint of some kind, even though no source file imports it.
+CONFIG_FILE = re.compile(
+    r"^(?:next\.config\.[cm]?[jt]sx?"
+    r"|sentry\.[\w.]*config\.[cm]?[jt]sx?"
+    r"|package\.json)$"
+)
+_CONFIG_TOKEN = re.compile(r"[A-Za-z0-9_./@\-]+")
 
 
 def resolve_src_roots(repo_path: Path, requested: list[str] | None) -> tuple[str, ...]:
@@ -101,21 +129,72 @@ def resolve_src_roots(repo_path: Path, requested: list[str] | None) -> tuple[str
     return found or ("",)
 
 
-def is_entrypoint(rel: str) -> bool:
-    base = Path(rel).name
-    if base in ENTRYPOINT_BASENAMES:
+def config_references(repo_path: Path, tracked: list[str]) -> set[str]:
+    """Path-ish tokens named by next.config.*, sentry.*.config.* and npm scripts.
+
+    A file wired in by one of these is loaded by the build, not imported by any
+    module, so the reference grep calls it dead. package.json in particular is
+    not part of the source corpus at all (it is not a .ts/.py file), which is
+    how a script entrypoint ends up looking unreferenced.
+
+    Only *path-shaped* references count. Matching bare identifiers out of a
+    config would silently suppress real candidates, and suppression in this
+    lens is invisible to the reader.
+    """
+    keys: set[str] = set()
+    for rel in tracked:
+        if not CONFIG_FILE.match(Path(rel).name):
+            continue
+        try:
+            text = (repo_path / rel).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if Path(rel).name == "package.json":
+            # Only the scripts block: dependency names are not repo paths.
+            try:
+                text = "\n".join(str(v) for v in
+                                 (json.loads(text).get("scripts") or {}).values())
+            except (json.JSONDecodeError, AttributeError, ValueError):
+                pass
+        base = Path(rel).parent.as_posix()
+        base = "" if base == "." else base + "/"
+        for tok in _CONFIG_TOKEN.findall(text):
+            if "/" not in tok and "." not in tok:
+                continue
+            for form in {tok, tok.lstrip("./"), base + tok.lstrip("./")}:
+                keys.add(form)
+                keys.add(form.rsplit(".", 1)[0] if "." in Path(form).name else form)
+                if "/" in form:  # a path segment, so its basename is meaningful
+                    name = form.rsplit("/", 1)[1]
+                    keys.add(name)
+                    keys.add(name.rsplit(".", 1)[0] if "." in name else name)
+    keys.discard("")
+    return keys
+
+
+def is_entrypoint(rel: str, config_refs: set[str] | frozenset = frozenset()) -> bool:
+    p = Path(rel)
+    if p.name in ENTRYPOINT_BASENAMES:
         return True
-    # Next.js app-router files, wherever the app directory happens to live
-    if re.match(r"(page|layout|route|loading|error|not-found|template)\.(tsx?|jsx?)$", base):
-        return True
+    if p.suffix in TS_EXT:
+        stem = p.stem
+        if stem in NEXT_ROOT_CONVENTIONS:
+            return True
+        if stem in NEXT_APP_CONVENTIONS and "app" in p.parts[:-1]:
+            return True
+    if config_refs:
+        rel_noext = rel.rsplit(".", 1)[0]
+        if {rel, rel_noext, p.name, p.stem} & config_refs:
+            return True
     return False
 
 
-def fp_class(rel: str, src: str) -> list[str]:
+def fp_class(rel: str, src: str,
+             config_refs: set[str] | frozenset = frozenset()) -> list[str]:
     """Tag likely false-positive categories so the report can discount."""
     tags = []
     low = rel.lower()
-    if is_entrypoint(rel):
+    if is_entrypoint(rel, config_refs):
         tags.append("framework-entrypoint")
     if "/routes/" in low or "/api/" in low:
         tags.append("fastapi-route")
@@ -197,6 +276,9 @@ def main() -> None:
     src_roots = resolve_src_roots(repo_path, args.src_root)
 
     ls = git(["ls-files"], repo).splitlines()
+    # Build-wired entrypoints, read before anything is judged: a file named by
+    # next.config.* / sentry.*.config.* / an npm script is loaded by the build.
+    config_refs = config_references(repo_path, ls)
     # CANDIDATE set = product code under the source roots, non-test.
     candidates = [
         f for f in ls
@@ -256,7 +338,7 @@ def main() -> None:
         if loc < 10:
             continue
         stem = Path(f).stem
-        tags = fp_class(f, src)
+        tags = fp_class(f, src, config_refs)
 
         # whole-file reference: is this module imported / named anywhere else?
         # A file's own definitions inflate ident_freq[stem]; subtract this file's
@@ -270,7 +352,7 @@ def main() -> None:
             # OR its exported symbols are used by ident (PascalCase components).
             own_spec = 1 if re.search(r"""(?:import|from|require)\b[^'"\n]*['"][^'"]*\b%s\b""" % re.escape(stem), src) else 0
             referenced = external_stem_uses > 0 or (spec_stems.get(stem, 0) - own_spec) > 0
-        if not referenced and not is_entrypoint(f):
+        if not referenced and not is_entrypoint(f, config_refs):
             file_rows.append(
                 {
                     "kind": "file",
@@ -369,7 +451,10 @@ def render_md(
         "hand** before removing anything.",
         ">",
         "> **False positives** (look dead, aren't) are auto-tagged: "
-        "`framework-entrypoint` (Next.js `page/layout/route`, `main.py`), "
+        "`framework-entrypoint` (Next.js convention files: the app-router set "
+        "plus `instrumentation`/`instrumentation-client`/`middleware`/`proxy`, "
+        "`main.py`, and anything named by `next.config.*`, `sentry.*.config.*` "
+        "or a `package.json` script), "
         "`fastapi-route` (mounted by decorator, never called by name), "
         "`llm-tool` (registered in a tool list rather than invoked), "
         "`orm/pydantic-model` (reflective), `scheduler-job`, "
@@ -381,6 +466,11 @@ def render_md(
         "symbols, common names (`get`, `run`, `process`) match by coincidence and "
         "get filtered, so the symbol list UNDER-reports (safe direction). Symbols "
         "shorter than 4 chars are skipped for the same reason.",
+        ">",
+        "> **Where the tags land**: a file that is a framework entrypoint is "
+        "dropped from the whole-file table entirely rather than listed with a "
+        "tag, because 'the framework loads it by name' is not a judgement call. "
+        "Tags on the remaining rows mark the softer classes.",
         ">",
         "> **Reference corpus**: every tracked source file in the repo counts as a "
         "reference, including tests, tooling and scripts outside the scanned "
