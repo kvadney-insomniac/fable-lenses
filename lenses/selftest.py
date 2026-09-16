@@ -615,6 +615,15 @@ def deadcode_sibling_import_under_a_doc_comment_and_test_only_references():
             "export default function Page() { return ToolsClient() }\n" + _filler(12)),
         "src/app/tools/tools-client.tsx":
             "export function ToolsClient() { return null; }\n" + _filler(12),
+        # A multi-line named import: the specifier sits on the closing line,
+        # which does not start with `import`. Prettier writes every long
+        # import this way, so a line-anchored regex that wants `import` and
+        # `from` together misses most of a real codebase.
+        "src/app/tools/menu.tsx": (
+            "import {\n  Panel,\n  PanelItem,\n} from '../../components/panel-kit'\n"
+            "export function Menu() { return Panel(PanelItem) }\n" + _filler(12)),
+        "src/components/panel-kit.tsx":
+            "export const Panel = 1\nexport const PanelItem = 2\n" + _filler(12),
         "src/components/Lonely.tsx":
             "export function Lonely() { return null; }\n" + _filler(12),
         "src/components/Lonely.test.tsx":
@@ -629,6 +638,8 @@ def deadcode_sibling_import_under_a_doc_comment_and_test_only_references():
         rows = {r["file"]: r for r in load_json(js)["files"]}
         assert "src/app/tools/tools-client.tsx" not in rows, \
             "the sibling import under the doc comment was not read"
+        assert "src/components/panel-kit.tsx" not in rows, \
+            "a multi-line named import was not read"
         assert "src/components/Lonely.tsx" in rows, rows.keys()
         assert rows["src/components/Lonely.tsx"]["test_only"] is True
         assert rows["src/components/OrphanCard.tsx"]["test_only"] is False

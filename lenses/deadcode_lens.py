@@ -227,11 +227,16 @@ def fp_class(rel: str, src: str,
     return sorted(set(tags))
 
 
-# One import per line, and the path never spans lines. Three shapes:
-#   import x from 'y'   /   export { x } from 'y'   /   import 'y'
-#   require('y')        /   import('y')             (also inside next/dynamic)
+# The quoted path never spans lines, and the line it sits on has to look like
+# an import. Four shapes:
+#   import x from 'y'   /   export { x } from 'y'      one line
+#   } from 'y'                                         the closing line of a
+#                                                      multi-line named import
+#   import 'y'                                         side-effect import
+#   require('y')        /   import('y')                also inside next/dynamic
 _SPEC = re.compile(
     r"""^\s*(?:import|export)\b[^'"\n]*?\bfrom\s*['"]([^'"\n]+)['"]"""
+    r"""|^\s*\}[^'"\n]*?\bfrom\s*['"]([^'"\n]+)['"]"""
     r"""|^\s*import\s*['"]([^'"\n]+)['"]"""
     r"""|\b(?:require|import)\(\s*['"]([^'"\n]+)['"]\s*\)""",
     re.M,
