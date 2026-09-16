@@ -49,26 +49,34 @@ def _tracked(repo: str, *args: str) -> list[str]:
 def find_tests(repo: str, tests_dir: str) -> tuple[list[str], str]:
     """Tracked test files, and a label saying how they were found.
 
-    Looks in `tests_dir` first, because a repo that has one usually means it.
-    When that comes back empty, fall back to matching conventional test
-    filenames anywhere in the tree.
+    The union of everything under `tests_dir` and every tracked file whose
+    name follows a test convention, wherever it lives. Both, always, deduped.
 
-    The fallback exists because the directory default is wrong for a whole
-    class of repo. Most JS and TS projects co-locate (`Foo.tsx` beside
-    `Foo.test.tsx`), so the lens found zero tests, every gap collapsed to the
-    raw churn number, and every row read "0 test file(s) mention it". The
-    report did say `0 test files read from 'tests/'`, but run_all's index does
-    not carry that line, so the ranking looked authoritative when its
-    denominator was empty for every file. Silent-zero, in other words: the
-    input was missing and the output still looked like an answer.
+    This used to read `tests_dir` and fall back to the conventional names only
+    when that directory was empty. That was wrong for a whole class of repo.
+    Most JS and TS projects co-locate (`Foo.tsx` beside `Foo.test.tsx`) AND
+    keep an `e2e/` directory, so pointing `--tests-dir` at `e2e/` read the 122
+    browser specs, ignored 838 unit tests sitting beside the code, and ranked
+    `MembersTab.tsx` as "0 test file(s) mention it" with `MembersTab.test.tsx`
+    in the same directory. The report did say how many files were read, but
+    run_all's index does not carry that line, so the ranking looked
+    authoritative when its denominator was missing for every file.
+    Silent-zero, in other words: the input was incomplete and the output still
+    looked like an answer.
     """
-    names = _tracked(repo, tests_dir)
-    if names:
-        return names, f"`{tests_dir}`"
-    names = [f for f in _tracked(repo) if _TEST_FILENAME.search(f)]
-    if names:
-        return names, "co-located test files (no `%s` in this repo)" % tests_dir
-    return [], f"`{tests_dir}` (none found)"
+    in_dir = set(_tracked(repo, tests_dir)) if tests_dir else set()
+    colocated = {f for f in _tracked(repo) if _TEST_FILENAME.search(f)} - in_dir
+    names = sorted(in_dir | colocated)
+    if in_dir and colocated:
+        label = (f"`{tests_dir}` ({len(in_dir)}) plus {len(colocated)} "
+                 "co-located test files elsewhere in the tree")
+    elif in_dir:
+        label = f"`{tests_dir}`"
+    elif colocated:
+        label = "co-located test files (no `%s` in this repo)" % tests_dir
+    else:
+        label = f"`{tests_dir}` (none found)"
+    return names, label
 
 
 def read_tests(repo: str, names: list[str]) -> list[str]:

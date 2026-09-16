@@ -17,6 +17,7 @@
  * + Jaccard similarity; flag pairs whose similarity is HIGH but < 1.0 (drift).
  *
  * Usage: node drift_lens_ts.js <repo_path> [--md REPORT-drift-ts.md] [--json data-drift-ts.json]
+ *        [--top 25]   groups printed in the report; the JSON always carries all of them
  *
  * Prints the report to stdout by default, like the Python lenses. --md writes
  * it to a path instead; --json writes the drifted groups as data. A bare
@@ -27,13 +28,15 @@ const path = require("path");
 const cp = require("child_process");
 
 function parseArgs(argv) {
-  const opts = { repo: null, md: null, json: null };
+  const opts = { repo: null, md: null, json: null, top: 25 };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--md") opts.md = argv[++i];
     else if (a === "--json") opts.json = argv[++i];
+    else if (a === "--top") opts.top = parseInt(argv[++i], 10);
     else if (a.startsWith("--md=")) opts.md = a.slice(5);
     else if (a.startsWith("--json=")) opts.json = a.slice(7);
+    else if (a.startsWith("--top=")) opts.top = parseInt(a.slice(6), 10);
     else if (a === "-h" || a === "--help") opts.help = true;
     else if (opts.repo === null) opts.repo = a;
     else if (opts.md === null) opts.md = a; // legacy positional outFile
@@ -42,8 +45,8 @@ function parseArgs(argv) {
 }
 
 const ARGS = parseArgs(process.argv.slice(2));
-if (ARGS.help || !ARGS.repo) {
-  console.error("usage: node drift_lens_ts.js <repo_path> [--md PATH] [--json PATH]");
+if (ARGS.help || !ARGS.repo || !Number.isFinite(ARGS.top) || ARGS.top < 0) {
+  console.error("usage: node drift_lens_ts.js <repo_path> [--md PATH] [--json PATH] [--top N]");
   process.exit(ARGS.help ? 0 : 2);
 }
 const REPO = ARGS.repo;
@@ -248,7 +251,7 @@ const lines = [
   "> **Nesting is excluded.** A pair where one function's line range contains the other's is skipped: a closure and the factory that returns it, a callback and the hook that declares it, a nested helper. The outer span includes the inner one, so they always look like near-identical copies, and there is nothing to reconcile because there is only one piece of code. Copies in the same file at disjoint line ranges are still reported.",
   "",
 ];
-ranked.slice(0, 25).forEach((g, gi) => {
+ranked.slice(0, ARGS.top).forEach((g, gi) => {
   const members = [...g].sort((x, y) => funcs[x].file.localeCompare(funcs[y].file));
   const sim = bestSim.get(find(members[0])) || 0;
   lines.push(`### ${gi + 1}. ${g.size} drifted copies · max sim ${Math.round(sim * 100)}% · ~${Math.max(...members.map((i) => funcs[i].loc))} LOC`);

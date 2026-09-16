@@ -39,6 +39,12 @@ names. Common names (`get`, `run`, `process`, `handler`) match somewhere by
 coincidence and get filtered out, so the symbol list UNDER-reports. Safer
 direction, but state it.
 
+A file whose ONLY reference is a test file is reported, marked `test_only`.
+A unit test does not keep a component alive; it keeps it compiling. The
+component that nothing renders and whose own `Foo.test.tsx` still passes is
+exactly the leftover a dead-code pass exists to find, and a corpus that
+counts tests as references hides it every time.
+
 WHICH DIRECTORIES GET SCANNED
     ``--src-root`` (repeatable, or comma-separated) names the directories that
     hold the code being *judged*, relative to the repo root. When omitted the
@@ -221,6 +227,35 @@ def fp_class(rel: str, src: str,
     return sorted(set(tags))
 
 
+# One import per line, and the path never spans lines. Three shapes:
+#   import x from 'y'   /   export { x } from 'y'   /   import 'y'
+#   require('y')        /   import('y')             (also inside next/dynamic)
+_SPEC = re.compile(
+    r"""^\s*(?:import|export)\b[^'"\n]*?\bfrom\s*['"]([^'"\n]+)['"]"""
+    r"""|^\s*import\s*['"]([^'"\n]+)['"]"""
+    r"""|\b(?:require|import)\(\s*['"]([^'"\n]+)['"]\s*\)""",
+    re.M,
+)
+
+
+def import_specifiers(src: str) -> list[str]:
+    """Module specifiers imported by a TS/JS source, one per import statement."""
+    return [next(g for g in m.groups() if g) for m in _SPEC.finditer(src)]
+
+
+# A test file, by path: a tests/ or __tests__/ segment, or a conventional name
+# (pytest's test_x.py / x_test.py / conftest.py; vitest and jest's x.test.ts,
+# x.spec.tsx; Go's x_test.go).
+_TEST_PATH = re.compile(
+    r"(^|/)(tests?|__tests__|__mocks__|spec)/"
+    r"|(^|/)(test_[^/]+\.py|[^/]+_test\.(py|go)|conftest\.py|[^/]+\.(test|spec)\.[jt]sx?)$"
+)
+
+
+def is_test_file(rel: str) -> bool:
+    return bool(_TEST_PATH.search(rel))
+
+
 def loc_of(src: str, is_py: bool) -> int:
     n = 0
     for ln in src.splitlines():
@@ -305,13 +340,17 @@ def main() -> None:
         except OSError:
             contents[f] = ""
 
-    # Read the full reference corpus once.
+    # Read the full reference corpus once. Test files stay in the corpus (a
+    # helper used only by the suite is not dead) but are remembered as tests,
+    # so a file that only a test names can be marked as such.
     corpus_blobs: list[str] = []
+    corpus_is_test: list[bool] = []
     for f in corpus_files:
         try:
             corpus_blobs.append((repo_path / f).read_text(encoding="utf-8", errors="ignore"))
         except OSError:
-            pass
+            continue
+        corpus_is_test.append(is_test_file(f))
     all_src = "\n".join(corpus_blobs)
 
     # ---- ONE-PASS indexes (avoid O(symbols × corpus) rescans) ----
@@ -324,11 +363,21 @@ def main() -> None:
     #    their stems from import/from/require specifiers, parsed PER FILE so
     #    quote pairing stays sane (a global quote-regex drifts on apostrophes
     #    once the corpus is a few megabytes).
+    #    Anchored per line and the captured path may not span lines. The
+    #    earlier form let the path run to the NEXT quote anywhere in the file,
+    #    so an apostrophe in a doc comment ("the client's features") opened a
+    #    quote that closed on the real `'./affordability-client'` import
+    #    several lines below, swallowing it. The sibling client component then
+    #    ranked first in the whole-file table as imported by nothing.
     spec_stems: Counter[str] = Counter()
-    _SPEC = re.compile(r"""(?:import|from|require|dynamic)\b[^'"\n]*['"]([^'"]+)['"]""")
-    for blob in corpus_blobs:
-        for spec in _SPEC.findall(blob):
+    spec_stems_src: Counter[str] = Counter()  # references from non-test files only
+    for blob, is_test in zip(corpus_blobs, corpus_is_test):
+        for spec in import_specifiers(blob):
             spec_stems[Path(spec).stem] += 1
+            if not is_test:
+                spec_stems_src[Path(spec).stem] += 1
+    ident_freq_src: Counter[str] = Counter(
+        _IDENT.findall("\n".join(b for b, t in zip(corpus_blobs, corpus_is_test) if not t)))
 
     file_rows = []
     symbol_rows = []
@@ -344,15 +393,25 @@ def main() -> None:
         # A file's own definitions inflate ident_freq[stem]; subtract this file's
         # own count so we measure references from OTHER files.
         own_stem_uses = len(re.findall(rf"\b{re.escape(stem)}\b", src))
-        external_stem_uses = ident_freq.get(stem, 0) - own_stem_uses
-        if is_py:
-            referenced = external_stem_uses > 0
-        else:
+        own_spec = sum(1 for spec in import_specifiers(src) if Path(spec).stem == stem)
+        candidate_is_test = is_test_file(f)
+
+        def referenced_in(idents: Counter, stems: Counter) -> bool:
+            # Subtract this file's own uses only when it is part of that corpus.
+            own_i = own_stem_uses
+            own_s = own_spec
+            if idents is ident_freq_src and candidate_is_test:
+                own_i = own_s = 0
+            if is_py:
+                return idents.get(stem, 0) - own_i > 0
             # TS: a module is referenced if another file imports its path stem,
             # OR its exported symbols are used by ident (PascalCase components).
-            own_spec = 1 if re.search(r"""(?:import|from|require)\b[^'"\n]*['"][^'"]*\b%s\b""" % re.escape(stem), src) else 0
-            referenced = external_stem_uses > 0 or (spec_stems.get(stem, 0) - own_spec) > 0
-        if not referenced and not is_entrypoint(f, config_refs):
+            return (idents.get(stem, 0) - own_i > 0
+                    or stems.get(stem, 0) - own_s > 0)
+
+        referenced_by_source = referenced_in(ident_freq_src, spec_stems_src)
+        referenced_at_all = referenced_by_source or referenced_in(ident_freq, spec_stems)
+        if not referenced_by_source and not is_entrypoint(f, config_refs):
             file_rows.append(
                 {
                     "kind": "file",
@@ -360,6 +419,8 @@ def main() -> None:
                     "loc": loc,
                     "fp_tags": tags,
                     "confidence": "high" if not tags else "low",
+                    # True when a test file is the only thing that names it.
+                    "test_only": bool(referenced_at_all),
                     "score": loc,
                 }
             )
@@ -473,8 +534,11 @@ def render_md(
         "Tags on the remaining rows mark the softer classes.",
         ">",
         "> **Reference corpus**: every tracked source file in the repo counts as a "
-        "reference, including tests, tooling and scripts outside the scanned "
-        "roots. A module used only by a build script is not dead.",
+        "reference, including tooling and scripts outside the scanned roots. A "
+        "module used only by a build script is not dead. A module named **only "
+        "by a test file** is listed and marked `test-only`: its own unit test "
+        "keeps it compiling, not alive, and that is the leftover this lens "
+        "exists to find.",
         "",
         "## 🎯 Whole-file candidates, imported by nothing (highest trust)",
         "",
@@ -486,7 +550,8 @@ def render_md(
     ]
     for i, r in enumerate(file_rows[:top], 1):
         tags = ", ".join(f"`{t}`" for t in r["fp_tags"]) or "**- none (candidate)**"
-        out.append(f"| {i} | {r['loc']} | {r['confidence']} | `{r['file']}` | {tags} |")
+        marker = " `test-only`" if r.get("test_only") else ""
+        out.append(f"| {i} | {r['loc']} | {r['confidence']} | `{r['file']}`{marker} | {tags} |")
     out.append("")
     out.append("## Per-symbol candidates, top-level name grep-absent elsewhere (low trust)")
     out.append("")
