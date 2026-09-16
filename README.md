@@ -132,12 +132,12 @@ python3 lenses/arch_lens.py /path/to/repo --md REPORT-arch.md
 |---|---|---|---|---|
 | `run_all.py` | `--out DIR`, default `lens-out/` | writes `REPORT-<lens>.md` per lens | writes `data-<lens>.json` per lens | also writes `REPORT-index.md` |
 | `score_targets.py` | stdout | yes | yes | |
-| `coverage_gap.py` | stdout | yes | yes | `--scores FILE` optional; the old `<scores.json> <repo>` argument order still works and warns |
+| `coverage_gap.py` | stdout | yes | yes | `--scores FILE` optional; reads `--tests-dir` AND every co-located `*.test.*` / `test_*.py` in the tree; the old `<scores.json> <repo>` argument order still works and warns |
 | `security_lens.py` | stdout | yes | yes | `--app-module FILE` for the router wiring |
 | `deadcode_lens.py` | stdout | yes | yes | |
 | `arch_lens.py` | stdout | yes | yes | `--lang auto\|py\|ts`, `--strict-top-layer` |
-| `drift_lens.py` | stdout | yes | yes | |
-| `drift_lens_ts.js` | stdout | yes | yes | needs `typescript` 5.x in the target repo or on `NODE_PATH` |
+| `drift_lens.py` | stdout | yes | yes | `--top N` groups in the report (default 25); the JSON keeps all of them |
+| `drift_lens_ts.js` | stdout | yes | yes | `--top N` as above; needs `typescript` 5.x in the target repo or on `NODE_PATH` |
 | `ci_lens.py` | stdout | yes | yes | needs `gh` |
 | `opportunity_v2.py` | `TARGETS-v2.md` | yes | `--json` | needs `gh`; `--data` is a `score_targets.py --json` file |
 
@@ -211,7 +211,23 @@ What that run found, and what changed as a result:
   end where 14 are real, so it is off for TS/JS and `--strict-top-layer` turns
   it back on.
 
-The lesson underneath all six: a lens that cannot resolve something reports
+- **The coverage lens read one test directory and stopped.** Pointed at
+  `e2e/` on the front end it read 122 browser specs, ignored the 838 unit
+  tests that sit beside the code, and ranked `MembersTab.tsx` as "0 test
+  file(s) mention it" with `MembersTab.test.tsx` in the same directory. It
+  now reads `--tests-dir` and every conventionally named test file in the
+  tree, and says how many of each it found.
+- **A doc-comment apostrophe hid a sibling import from the dead-code lens.**
+  The import-specifier regex let a quoted path run across lines, so "the
+  client's" in a comment opened a string that closed on the real
+  `'./affordability-client'` import below it. Two live client components
+  headed the whole-file table. Specifiers are read one per line now.
+- **A component's own test kept it "alive".** Every tracked file counted as a
+  reference, tests included, so a dialog nothing rendered survived a previous
+  dead-code pass because `ConversationViewerDialog.test.tsx` names it. A file
+  referenced only by tests is listed now and marked `test-only`.
+
+The lesson underneath all of these: a lens that cannot resolve something reports
 *silence*, and silence looks exactly like a clean result. Check that the counts
 a lens gives you are plausible for the repo's size before you trust its
 ranking, which is what the section above is about.

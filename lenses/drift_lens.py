@@ -28,6 +28,7 @@ but didn't. Each is a verify-then-fix candidate (diff the members, decide which
 behavior is correct, unify behind one helper + a golden master).
 
 Usage: python3 drift_lens.py <repo_dir> [--md REPORT-drift.md] [--json data-drift.json]
+       [--top 25]   groups printed in the report; the JSON always carries all of them
 
 Prints the report to stdout by default; --md writes it to a path instead.
 """
@@ -155,6 +156,8 @@ def main() -> None:
     ap.add_argument("repo")
     ap.add_argument("--md")
     ap.add_argument("--json")
+    ap.add_argument("--top", type=int, default=25,
+                    help="drifted groups to print in the report (JSON keeps all)")
     args = ap.parse_args()
 
     funcs = collect_functions(args.repo)
@@ -206,7 +209,7 @@ def main() -> None:
            "copies, and there is nothing to reconcile because there is only one "
            "piece of code. Copies in the same file at disjoint line ranges are "
            "still reported.", ""]
-    for gi, g in enumerate(ranked[:25], 1):
+    for gi, g in enumerate(ranked[:args.top], 1):
         members = sorted(g, key=lambda i: funcs[i]["file"])
         root = find_class(parent, members[0])
         out.append(f"### {gi}. {len(g)} drifted copies · max sim "

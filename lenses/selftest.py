@@ -172,6 +172,30 @@ def coverage_gap_legacy_positional_order_still_works():
         assert load_json(new_json) == load_json(old_json), "legacy order diverged"
 
 
+@case
+def coverage_gap_unions_tests_dir_with_colocated_tests():
+    """A repo with BOTH a tests/ directory and co-located tests reads both.
+
+    The fallback-only form read `tests/` and stopped, so a module whose only
+    test sits beside it was ranked as untested.
+    """
+    fixture = dict(COVERAGE_FIXTURE)
+    fixture["pkg/pricing_test.py"] = (
+        "from pkg.pricing import quote\n\n\ndef test_quote():\n    assert quote(1, 2)\n")
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        repo = make_repo(tmp, fixture, commits=3)
+        md, js = tmp / "REPORT-coverage.md", tmp / "data-coverage.json"
+        run_lens("coverage_gap.py", str(repo), "--since", "10 years ago",
+                 "--min-impact", "1", "--md", str(md), "--json", str(js))
+        by_file = {r["file"]: r for r in load_json(js)}
+        assert by_file["pkg/mailer.py"]["test_refs"] == 1, by_file["pkg/mailer.py"]
+        assert by_file["pkg/pricing.py"]["test_refs"] == 1, by_file["pkg/pricing.py"]
+        text = md.read_text(encoding="utf-8")
+        assert "2 test files read" in text, text[:600]
+        assert "co-located" in text, text[:600]
+
+
 # --------------------------------------------------------------------------- #
 # drift: both lenses print to stdout by default and honour --md / --json
 # --------------------------------------------------------------------------- #
@@ -357,6 +381,37 @@ def drift_py_still_reports_two_copies_in_one_file():
         assert {"apply_discount", "apply_rebate"} <= names, names
 
 
+@case
+def drift_py_top_caps_the_report_not_the_json():
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        repo = make_repo(tmp, _drifted_pair("py"))
+        md, js = tmp / "d.md", tmp / "d.json"
+        run_lens("drift_lens.py", str(repo), "--top", "0", "--md", str(md), "--json", str(js))
+        text = md.read_text(encoding="utf-8")
+        assert "**1 drifted groups**" in text, text[:300]
+        assert "### 1." not in text, "--top 0 still printed a group"
+        assert len(load_json(js)) == 1, "the JSON must keep every group regardless of --top"
+        run_lens("drift_lens.py", str(repo), "--top", "1", "--md", str(md))
+        assert "### 1." in md.read_text(encoding="utf-8")
+
+
+@case
+def drift_ts_top_caps_the_report_not_the_json():
+    need_typescript()
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        repo = make_repo(tmp, _drifted_pair("ts"))
+        md, js = tmp / "d.md", tmp / "d.json"
+        run_lens("drift_lens_ts.js", str(repo), "--top", "0", "--md", str(md), "--json", str(js))
+        text = md.read_text(encoding="utf-8")
+        assert "**1 drifted groups**" in text, text[:300]
+        assert "### 1." not in text, "--top 0 still printed a group"
+        assert len(load_json(js)) == 1, "the JSON must keep every group regardless of --top"
+        run_lens("drift_lens_ts.js", str(repo), "--top=1", "--md", str(md))
+        assert "### 1." in md.read_text(encoding="utf-8")
+
+
 # --------------------------------------------------------------------------- #
 # arch: TS/JS import resolution (tsconfig paths, index files, .tsx)
 # --------------------------------------------------------------------------- #
@@ -536,6 +591,60 @@ def deadcode_skips_next_conventions_and_config_wired_files():
         # convention NAME outside app/ is an ordinary component, not an entrypoint.
         assert "src/components/OrphanCard.tsx" in flagged, flagged
         assert "src/components/error.tsx" in flagged, flagged
+
+
+@case
+def deadcode_sibling_import_under_a_doc_comment_and_test_only_references():
+    """Two reference bugs on the same fixture.
+
+    1. `page.tsx` imports `./tools-client` right under a doc comment that
+       contains the word "import" and an apostrophe. The old specifier regex
+       let the quoted path run across lines, so the apostrophe opened a
+       "string" that closed on the real import and swallowed it, and the
+       client component ranked as imported by nothing.
+    2. `Lonely.tsx` is named only by its own `Lonely.test.tsx`. A test keeps a
+       component compiling, not alive: it must be reported, marked test_only.
+    """
+    fixture = dict(DEADCODE_FIXTURE)
+    fixture.update({
+        "src/app/tools/page.tsx": (
+            "/**\n"
+            " * Server page. We import the client's gate here rather than in the client.\n"
+            " */\n"
+            "import { ToolsClient } from './tools-client'\n"
+            "export default function Page() { return ToolsClient() }\n" + _filler(12)),
+        "src/app/tools/tools-client.tsx":
+            "export function ToolsClient() { return null; }\n" + _filler(12),
+        # A multi-line named import: the specifier sits on the closing line,
+        # which does not start with `import`. Prettier writes every long
+        # import this way, so a line-anchored regex that wants `import` and
+        # `from` together misses most of a real codebase.
+        "src/app/tools/menu.tsx": (
+            "import {\n  Panel,\n  PanelItem,\n} from '../../components/panel-kit'\n"
+            "export function Menu() { return Panel(PanelItem) }\n" + _filler(12)),
+        "src/components/panel-kit.tsx":
+            "export const Panel = 1\nexport const PanelItem = 2\n" + _filler(12),
+        "src/components/Lonely.tsx":
+            "export function Lonely() { return null; }\n" + _filler(12),
+        "src/components/Lonely.test.tsx":
+            "import { Lonely } from './Lonely'\nexport const t = Lonely\n" + _filler(12),
+    })
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        repo = make_repo(tmp, fixture)
+        js, md = tmp / "data-deadcode.json", tmp / "a.md"
+        run_lens("deadcode_lens.py", str(repo), "--src-root", ".",
+                 "--md", str(md), "--json", str(js))
+        rows = {r["file"]: r for r in load_json(js)["files"]}
+        assert "src/app/tools/tools-client.tsx" not in rows, \
+            "the sibling import under the doc comment was not read"
+        assert "src/components/panel-kit.tsx" not in rows, \
+            "a multi-line named import was not read"
+        assert "src/components/Lonely.tsx" in rows, rows.keys()
+        assert rows["src/components/Lonely.tsx"]["test_only"] is True
+        assert rows["src/components/OrphanCard.tsx"]["test_only"] is False
+        text = md.read_text(encoding="utf-8")
+        assert "`src/components/Lonely.tsx` `test-only`" in text, text
 
 
 # --------------------------------------------------------------------------- #

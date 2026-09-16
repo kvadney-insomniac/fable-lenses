@@ -173,9 +173,11 @@ def build_plan(args, repo: Path, out: Path) -> list[dict]:
                                  "--ref", args.ref, "--top", str(args.report_top),
                                  "--md", md("arch"), "--json", js("arch")]},
         {"name": "drift", "cmd": [PY, str(HERE / "drift_lens.py"), str(repo),
+                                  "--top", str(args.report_top),
                                   "--md", md("drift"), "--json", js("drift")],
          "skip": None if has_ext(repo, "*.py") else "no tracked .py files"},
         {"name": "drift-ts", "cmd": ["node", str(HERE / "drift_lens_ts.js"), str(repo),
+                                     "--top", str(args.report_top),
                                      "--md", md("drift-ts"), "--json", js("drift-ts")],
          "skip": (None if has_ext(repo, "*.ts", "*.tsx", "*.js", "*.jsx",
                                   "*.mjs", "*.cjs")
