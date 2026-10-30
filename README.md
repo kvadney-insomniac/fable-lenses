@@ -251,6 +251,9 @@ runs one cheap agent per candidate, verifying against a git ref via
 run agents in parallel. Each returns a structured verdict:
 `real / already-fixed / false-positive / unclear`.
 
+`triage_report.py` renders the workflow's JSON result into a Markdown report (verified
+findings first, false positives folded away, every security row always printed).
+
 **One policy is deliberate: cheap models may not bury security findings.**
 Security-lens rows are annotate-only, a cheap verdict adds context, but the row
 always appears in the report. The asymmetry is the argument: a false discard on

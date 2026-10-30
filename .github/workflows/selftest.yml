@@ -1,0 +1,37 @@
+name: selftest
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # The TS drift lens needs the typescript 5.x compiler API; without it
+      # four cases skip. Install it outside the repo and point NODE_PATH at it.
+      - name: Install typescript 5 for the TS drift lens
+        run: |
+          mkdir -p "$RUNNER_TEMP/ts"
+          npm install --prefix "$RUNNER_TEMP/ts" typescript@5
+          echo "NODE_PATH=$RUNNER_TEMP/ts/node_modules" >> "$GITHUB_ENV"
+      - name: Self-checks
+        run: python3 lenses/selftest.py
