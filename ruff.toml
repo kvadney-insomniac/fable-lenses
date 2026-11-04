@@ -1,0 +1,14 @@
+# Lint configuration for the Python lenses.
+#
+# The rule set is named explicitly rather than inherited from ruff's defaults,
+# which have grown between releases, so `ruff check` means the same thing on
+# every machine and in CI: pyflakes (F) plus the pycodestyle errors and
+# warnings (E, W). E501 is off: the lines over 100 columns are regex patterns
+# and test fixtures, which read worse wrapped than long.
+# Rule reference: https://docs.astral.sh/ruff/rules/
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]

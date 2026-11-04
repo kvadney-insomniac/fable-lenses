@@ -45,9 +45,12 @@ def main():
 
     res = json.loads(Path(args.json).read_text())
     vs = res["verdicts"]
-    name = lambda v: f"`{v['file']}`" + (f" · `{v.get('symbol')}`" if v.get("symbol") else "")
-    # Rows carry the target name they were scored under; older runs may not.
-    tgt = lambda v: v.get("target", "")
+    def name(v):
+        return f"`{v['file']}`" + (f" · `{v.get('symbol')}`" if v.get("symbol") else "")
+
+    def tgt(v):
+        # Rows carry the target name they were scored under; older runs may not.
+        return v.get("target", "")
 
     L = []
     if args.header:

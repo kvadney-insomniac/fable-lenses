@@ -419,15 +419,19 @@ def tarjan_sccs(graph):
         if start in index:
             continue
         work = [(start, iter(graph.get(start, ())))]
-        index[start] = low[start] = counter[0]; counter[0] += 1
-        stack.append(start); on_stack.add(start)
+        index[start] = low[start] = counter[0]
+        counter[0] += 1
+        stack.append(start)
+        on_stack.add(start)
         while work:
             node, it = work[-1]
             advanced = False
             for nxt in it:
                 if nxt not in index:
-                    index[nxt] = low[nxt] = counter[0]; counter[0] += 1
-                    stack.append(nxt); on_stack.add(nxt)
+                    index[nxt] = low[nxt] = counter[0]
+                    counter[0] += 1
+                    stack.append(nxt)
+                    on_stack.add(nxt)
                     work.append((nxt, iter(graph.get(nxt, ()))))
                     advanced = True
                     break
@@ -442,7 +446,9 @@ def tarjan_sccs(graph):
             if low[node] == index[node]:
                 scc = []
                 while True:
-                    w = stack.pop(); on_stack.discard(w); scc.append(w)
+                    w = stack.pop()
+                    on_stack.discard(w)
+                    scc.append(w)
                     if w == node:
                         break
                 if len(scc) > 1:

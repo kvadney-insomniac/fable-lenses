@@ -67,7 +67,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from score_targets import DENY, denied, git
+from score_targets import denied, git
 
 PY_EXT = {".py"}
 TS_EXT = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}

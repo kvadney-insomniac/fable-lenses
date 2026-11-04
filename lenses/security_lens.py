@@ -83,7 +83,7 @@ from collections import defaultdict
 from pathlib import Path
 
 # Reuse the shared primitives so this lens stays consistent with the machine.
-from score_targets import DENY, denied, git, quintile_bucketer
+from score_targets import denied, git, quintile_bucketer
 
 PY_EXT = {".py"}
 TS_EXT = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
