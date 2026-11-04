@@ -16,7 +16,7 @@ every file on impact × opportunity:
 • opportunity = real complexity, cyclomatic and nesting depth via Python's ast,
   a line-and-branch heuristic for TS/JS.
 
-Each axis becomes a 1–5 quintile bucket within the repo, multiplied to 1–25.
+Each axis becomes a 1 to 5 quintile bucket within the repo, multiplied to 1 to 25.
 Low buckets get discarded. What survives is a ranked list to point a premium
 model at.
 
@@ -66,7 +66,7 @@ work is expensive and needs judgment. So I split them.
 
 Open-sourced the result today: lenses that score every file on impact ×
 opportunity, git churn (exact, from history) × real complexity (via ast)...
-bucket each axis 1–5 by quintile within the repo, and throw away everything
+bucket each axis 1 to 5 by quintile within the repo, and throw away everything
 low. What's left is a ranked list you point the expensive model at.
 
 The one I didn't expect to need most: a drift lens. It finds code that was

@@ -1,0 +1,88 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint (ruff, node --check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      # Pinned so a new ruff release cannot turn the job red on its own.
+      # The rule set lives in ruff.toml at the repo root.
+      - name: Install ruff
+        run: python3 -m pip install --quiet ruff==0.16.9
+      - name: ruff check
+        run: ruff check lenses scripts
+      - name: Syntax-check the node lenses
+        run: |
+          for f in lenses/*.js; do node --check "$f"; done
+
+  prose:
+    name: prose (no em or en dashes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: python3 scripts/check_dashes.py
+
+  version:
+    name: version (VERSION, CHANGELOG, --version agree)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: python3 scripts/check_version.py
+
+  selftest:
+    name: selftest (py ${{ matrix.python-version }}, ts ${{ matrix.typescript }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+        typescript: ['5']
+        include:
+          # The TS/JS drift lens only needs createSourceFile and SyntaxKind,
+          # which the 6.x JavaScript API still exports; one cell proves it.
+          - python-version: '3.13'
+            typescript: '6'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      # The TS drift lens needs the typescript JavaScript compiler API; without
+      # it four cases skip. Install it outside the repo and point NODE_PATH at it.
+      - name: Install typescript ${{ matrix.typescript }} for the TS drift lens
+        run: |
+          mkdir -p "$RUNNER_TEMP/ts"
+          npm install --prefix "$RUNNER_TEMP/ts" "typescript@${{ matrix.typescript }}"
+          echo "NODE_PATH=$RUNNER_TEMP/ts/node_modules" >> "$GITHUB_ENV"
+      - name: Self-checks (every case must run, none skipped)
+        shell: bash
+        run: |
+          python3 lenses/selftest.py | tee "$RUNNER_TEMP/selftest.log"
+          ! grep -q '^skip ' "$RUNNER_TEMP/selftest.log"

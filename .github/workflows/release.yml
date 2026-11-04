@@ -1,0 +1,55 @@
+# Cut a GitHub Release when a version tag is pushed.
+#
+# Nothing is published to a package index: the toolkit is cloned, not
+# installed. The release is a tag plus the matching CHANGELOG section, created
+# only after the tag, VERSION and CHANGELOG are shown to agree and the
+# self-checks pass on the tagged commit.
+#
+#   git tag -a v0.1.0 -m "fable-lenses 0.1.0"
+#   git push origin v0.1.0
+#
+# Tag filters: https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows
+# gh in workflows: https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-what-your-workflow-does/using-github-cli-in-workflows
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Tag matches VERSION and CHANGELOG
+        run: python3 scripts/check_version.py --tag "$GITHUB_REF_NAME"
+      - name: Install typescript 5 for the TS drift lens
+        run: |
+          mkdir -p "$RUNNER_TEMP/ts"
+          npm install --prefix "$RUNNER_TEMP/ts" typescript@5
+          echo "NODE_PATH=$RUNNER_TEMP/ts/node_modules" >> "$GITHUB_ENV"
+      - name: Self-checks on the tagged commit
+        run: python3 lenses/selftest.py
+      - name: Release notes from CHANGELOG.md
+        run: python3 scripts/release_notes.py > "$RUNNER_TEMP/notes.md"
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "fable-lenses $GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md"
