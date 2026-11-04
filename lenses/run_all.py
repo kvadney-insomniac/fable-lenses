@@ -40,6 +40,18 @@ HERE = Path(__file__).resolve().parent
 PY = sys.executable or "python3"
 
 
+def toolkit_version() -> str:
+    """The toolkit's version, read from the VERSION file at the repo root.
+
+    One file holds the number; `--version`, the CHANGELOG check and the
+    release tag are all compared against it (see scripts/check_version.py).
+    """
+    try:
+        return (HERE.parent / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "unknown"
+
+
 # --------------------------------------------------------------------------- #
 # index rendering: one line per row, per lens
 # --------------------------------------------------------------------------- #
@@ -327,6 +339,8 @@ def main() -> None:
                     help="lens name to skip; repeatable")
     ap.add_argument("--verbose", action="store_true",
                     help="pass through each lens's own stderr summary")
+    ap.add_argument("--version", action="version",
+                    version=f"fable-lenses {toolkit_version()}")
     args = ap.parse_args()
 
     repo = Path(args.repo)

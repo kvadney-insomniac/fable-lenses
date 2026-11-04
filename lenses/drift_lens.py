@@ -179,7 +179,8 @@ def main() -> None:
     # Cluster flagged pairs into drift groups (union-find).
     parent: dict[int, int] = {}
     for _, a, b in flagged:
-        parent.setdefault(a, a); parent.setdefault(b, b)
+        parent.setdefault(a, a)
+        parent.setdefault(b, b)
         parent[find_class(parent, a)] = find_class(parent, b)
     groups: dict[int, set[int]] = defaultdict(set)
     for node in list(parent):
