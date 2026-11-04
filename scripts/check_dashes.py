@@ -13,7 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-BAD = {"—": "em dash", "–": "en dash"}
+# Built from code points so this file contains neither character itself.
+BAD = {chr(0x2014): "em dash", chr(0x2013): "en dash"}
 BINARY = {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip", ".ico", ".woff", ".woff2", ".lock"}
 
 
